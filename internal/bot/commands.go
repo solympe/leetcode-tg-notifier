@@ -12,7 +12,7 @@ import (
 	"github.com/solympe/leetcode-tg-notifier/internal/storage"
 )
 
-func (b *Bot) handleStart(chatID int64) {
+func (b *tgBot) handleStart(chatID int64) {
 	msg := tgbotapi.NewMessage(chatID, fmt.Sprintf(msgWelcome, b.botName))
 	msg.ParseMode = parseMode
 	msg.ReplyMarkup = startKeyboard()
@@ -21,11 +21,11 @@ func (b *Bot) handleStart(chatID int64) {
 	}
 }
 
-func (b *Bot) handleAbout(chatID int64) {
+func (b *tgBot) handleAbout(chatID int64) {
 	b.sendMsg(chatID, msgAbout)
 }
 
-func (b *Bot) handleSetup(chatID int64) {
+func (b *tgBot) handleSetup(chatID int64) {
 	if s := b.states.get(chatID); s == stateAwaitingTime || s == stateAwaitingTimezone {
 		return
 	}
@@ -38,11 +38,11 @@ func (b *Bot) handleSetup(chatID int64) {
 	b.states.setSetupMsgID(chatID, sent.MessageID)
 }
 
-func (b *Bot) handleToday(chatID int64) {
+func (b *tgBot) handleToday(chatID int64) {
 	b.SendDailyProblem(chatID)
 }
 
-func (b *Bot) handleStatus(chatID int64) {
+func (b *tgBot) handleStatus(chatID int64) {
 	cfg, ok := b.store.Get(chatID)
 	if !ok {
 		b.sendMsg(chatID, msgStatusInactive)
@@ -51,7 +51,7 @@ func (b *Bot) handleStatus(chatID int64) {
 	b.sendMsg(chatID, fmt.Sprintf(msgStatusActive, cfg.NotifyTime, cfg.Timezone))
 }
 
-func (b *Bot) handleUnsubscribe(chatID int64) {
+func (b *tgBot) handleUnsubscribe(chatID int64) {
 	if err := b.store.Delete(chatID); err != nil {
 		log.Printf("store.Delete: %v", err)
 	}
@@ -59,7 +59,7 @@ func (b *Bot) handleUnsubscribe(chatID int64) {
 	b.sendMsg(chatID, msgDisabled)
 }
 
-func (b *Bot) handleRating(chatID int64) {
+func (b *tgBot) handleRating(chatID int64) {
 	cfg, ok := b.store.Get(chatID)
 	if !ok || len(cfg.Members) == 0 {
 		b.sendMsg(chatID, msgRatingEmpty)
@@ -96,13 +96,13 @@ func (b *Bot) handleRating(chatID int64) {
 	b.sendMsg(chatID, sb.String())
 }
 
-func (b *Bot) handleDone(cb *tgbotapi.CallbackQuery, chatID int64, _ int) {
+func (b *tgBot) handleDone(cb *tgbotapi.CallbackQuery, chatID int64, _ int) {
 	today := time.Now().UTC().Format("2006-01-02")
 	userID := cb.From.ID
 
 	cfg, ok := b.store.Get(chatID)
 	if !ok {
-		b.answerCB(cb.ID, "")
+		b.answerCB(cb.ID, msgNotSubscribed)
 		return
 	}
 	if cfg.Members == nil {

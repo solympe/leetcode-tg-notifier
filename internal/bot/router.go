@@ -12,13 +12,17 @@ func isCommand(text, cmd string) bool {
 	return text == cmd || strings.HasPrefix(text, cmd+"@")
 }
 
-func (b *Bot) answerCB(id, text string) {
+func (b *tgBot) answerCB(id, text string) {
 	if _, err := b.api.Request(tgbotapi.NewCallback(id, text)); err != nil {
 		log.Printf("answer callback: %v", err)
 	}
 }
 
-func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
+func (b *tgBot) handleCallback(cb *tgbotapi.CallbackQuery) {
+	if cb.Message == nil {
+		b.answerCB(cb.ID, msgMessageExpired)
+		return
+	}
 	chatID := cb.Message.Chat.ID
 	msgID := cb.Message.MessageID
 
@@ -67,7 +71,7 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 	}
 }
 
-func (b *Bot) handleMessage(update tgbotapi.Update) {
+func (b *tgBot) handleMessage(update tgbotapi.Update) {
 	if update.CallbackQuery != nil {
 		b.handleCallback(update.CallbackQuery)
 		return

@@ -111,7 +111,7 @@ func TestHandleDone_NewDayAllowsCount(t *testing.T) {
 	}
 }
 
-func TestHandleDone_NoConfig_AnswersEmpty(t *testing.T) {
+func TestHandleDone_NoConfig_AnswersNotSubscribed(t *testing.T) {
 	sender := newMockSender()
 	store := newMockStorage()
 	b := newTestBot(sender, store, &mockScheduler{}, &mockLCClient{})
@@ -119,8 +119,8 @@ func TestHandleDone_NoConfig_AnswersEmpty(t *testing.T) {
 	cb := makeCallbackQuery("cb4", 1, "Alice", 999)
 	b.handleDone(cb, 999, 1)
 
-	if text := lastCallbackText(sender); text != "" {
-		t.Errorf("expected empty callback answer for unknown chat, got %q", text)
+	if text := lastCallbackText(sender); text != msgNotSubscribed {
+		t.Errorf("expected %q, got %q", msgNotSubscribed, text)
 	}
 }
 

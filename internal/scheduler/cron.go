@@ -11,24 +11,24 @@ import (
 	"github.com/solympe/leetcode-tg-notifier/internal/storage"
 )
 
-type CronScheduler struct {
+type cronScheduler struct {
 	c       *cron.Cron
 	send    SendFunc
 	mu      sync.Mutex
 	entries map[int64]cron.EntryID
 }
 
-func NewCronScheduler(send SendFunc) *CronScheduler {
+func NewCronScheduler(send SendFunc) Scheduler {
 	c := cron.New()
 	c.Start()
-	return &CronScheduler{
+	return &cronScheduler{
 		c:       c,
 		send:    send,
 		entries: make(map[int64]cron.EntryID),
 	}
 }
 
-func (cs *CronScheduler) Schedule(chatID int64, cfg storage.ChatConfig) error {
+func (cs *cronScheduler) Schedule(chatID int64, cfg storage.ChatConfig) error {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
@@ -54,7 +54,7 @@ func (cs *CronScheduler) Schedule(chatID int64, cfg storage.ChatConfig) error {
 	return nil
 }
 
-func (cs *CronScheduler) Remove(chatID int64) {
+func (cs *cronScheduler) Remove(chatID int64) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 

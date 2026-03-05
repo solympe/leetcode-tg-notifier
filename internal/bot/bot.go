@@ -16,7 +16,14 @@ type TelegramSender interface {
 	GetUpdatesChan(config tgbotapi.UpdateConfig) tgbotapi.UpdatesChannel
 }
 
-type Bot struct {
+// Bot is the public interface for the Telegram bot.
+type Bot interface {
+	Run()
+	SetScheduler(sched scheduler.Scheduler)
+	SendDailyProblem(chatID int64)
+}
+
+type tgBot struct {
 	api     TelegramSender
 	botName string
 	store   storage.Storage
@@ -25,8 +32,8 @@ type Bot struct {
 	states  *stateStore
 }
 
-func New(api TelegramSender, botName string, store storage.Storage, lc leetcode.Client, sched scheduler.Scheduler) *Bot {
-	return &Bot{
+func New(api TelegramSender, botName string, store storage.Storage, lc leetcode.Client, sched scheduler.Scheduler) Bot {
+	return &tgBot{
 		api:     api,
 		botName: botName,
 		store:   store,
@@ -36,11 +43,11 @@ func New(api TelegramSender, botName string, store storage.Storage, lc leetcode.
 	}
 }
 
-func (b *Bot) SetScheduler(sched scheduler.Scheduler) {
+func (b *tgBot) SetScheduler(sched scheduler.Scheduler) {
 	b.sched = sched
 }
 
-func (b *Bot) Run() {
+func (b *tgBot) Run() {
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 	updates := b.api.GetUpdatesChan(u)

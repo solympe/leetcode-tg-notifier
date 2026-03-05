@@ -11,7 +11,7 @@ import (
 
 var timeRegexp = regexp.MustCompile(`^([01]\d|2[0-3]):([0-5]\d)$`)
 
-func (b *Bot) handleAwaitingTime(chatID int64, text string) {
+func (b *tgBot) handleAwaitingTime(chatID int64, text string) {
 	msgID := b.states.getSetupMsgID(chatID)
 	if !timeRegexp.MatchString(text) {
 		b.editMsgWithKB(chatID, msgID, msgInvalidTime, setupTimeKeyboard())
@@ -22,7 +22,7 @@ func (b *Bot) handleAwaitingTime(chatID int64, text string) {
 	b.editMsgWithKB(chatID, msgID, fmt.Sprintf(msgChooseTz, text), setupTzKeyboard())
 }
 
-func (b *Bot) handleAwaitingTimezone(chatID int64, text string) {
+func (b *tgBot) handleAwaitingTimezone(chatID int64, text string) {
 	msgID := b.states.getSetupMsgID(chatID)
 	if _, err := time.LoadLocation(text); err != nil {
 		b.editMsgWithKB(chatID, msgID, msgInvalidTz, setupTzKeyboard())
@@ -37,7 +37,7 @@ func (b *Bot) handleAwaitingTimezone(chatID int64, text string) {
 	b.editMsg(chatID, msgID, fmt.Sprintf(msgAllSet, notifyTime, text))
 }
 
-func (b *Bot) finishSetup(chatID int64, notifyTime, timezone string) {
+func (b *tgBot) finishSetup(chatID int64, notifyTime, timezone string) {
 	cfg := storage.ChatConfig{
 		ChatID:     chatID,
 		NotifyTime: notifyTime,

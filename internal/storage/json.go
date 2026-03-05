@@ -12,14 +12,14 @@ type jsonFile struct {
 	Chats map[string]ChatConfig `json:"chats"`
 }
 
-type JSONStorage struct {
+type jsonStorage struct {
 	mu   sync.Mutex
 	path string
 	data jsonFile
 }
 
-func NewJSONStorage(path string) (*JSONStorage, error) {
-	s := &JSONStorage{
+func NewJSONStorage(path string) (Storage, error) {
+	s := &jsonStorage{
 		path: path,
 		data: jsonFile{Chats: make(map[string]ChatConfig)},
 	}
@@ -29,7 +29,7 @@ func NewJSONStorage(path string) (*JSONStorage, error) {
 	return s, nil
 }
 
-func (s *JSONStorage) load() error {
+func (s *jsonStorage) load() error {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -44,7 +44,7 @@ func (s *JSONStorage) load() error {
 	return nil
 }
 
-func (s *JSONStorage) save() error {
+func (s *jsonStorage) save() error {
 	data, err := json.MarshalIndent(s.data, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
@@ -59,28 +59,28 @@ func key(chatID int64) string {
 	return fmt.Sprintf("%d", chatID)
 }
 
-func (s *JSONStorage) Get(chatID int64) (ChatConfig, bool) {
+func (s *jsonStorage) Get(chatID int64) (ChatConfig, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cfg, ok := s.data.Chats[key(chatID)]
 	return cfg, ok
 }
 
-func (s *JSONStorage) Set(cfg ChatConfig) error {
+func (s *jsonStorage) Set(cfg ChatConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.data.Chats[key(cfg.ChatID)] = cfg
 	return s.save()
 }
 
-func (s *JSONStorage) Delete(chatID int64) error {
+func (s *jsonStorage) Delete(chatID int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.data.Chats, key(chatID))
 	return s.save()
 }
 
-func (s *JSONStorage) All() []ChatConfig {
+func (s *jsonStorage) All() []ChatConfig {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	result := make([]ChatConfig, 0, len(s.data.Chats))

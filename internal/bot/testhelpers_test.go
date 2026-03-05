@@ -120,6 +120,6 @@ func (m *mockLCClient) FetchDaily() (*leetcode.Problem, error) {
 	return m.problem, m.err
 }
 
-func newTestBot(sender *mockSender, store *mockStorage, sched *mockScheduler, lc *mockLCClient) *Bot {
-	return New(sender, "TestBot", store, lc, sched)
+func newTestBot(sender *mockSender, store *mockStorage, sched *mockScheduler, lc *mockLCClient) *tgBot {
+	return New(sender, "TestBot", store, lc, sched).(*tgBot)
 }

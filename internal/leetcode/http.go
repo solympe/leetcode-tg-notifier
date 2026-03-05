@@ -32,18 +32,18 @@ type lcResponse struct {
 	} `json:"data"`
 }
 
-type HTTPClient struct {
+type httpClient struct {
 	http *http.Client
 }
 
-func NewHTTPClient(c *http.Client) *HTTPClient {
+func NewHTTPClient(c *http.Client) Client {
 	if c == nil {
 		c = http.DefaultClient
 	}
-	return &HTTPClient{http: c}
+	return &httpClient{http: c}
 }
 
-func (hc *HTTPClient) FetchDaily() (*Problem, error) {
+func (hc *httpClient) FetchDaily() (*Problem, error) {
 	req, err := http.NewRequest("POST", graphqlURL, strings.NewReader(dailyQuery))
 	if err != nil {
 		return nil, err

@@ -29,6 +29,8 @@ const (
 	msgChooseTz       = "Time: <b>%s</b>\n\nChoose your timezone or type it manually (e.g. <code>Europe/Moscow</code>)\nhttps://en.wikipedia.org/wiki/List_of_tz_database_time_zones"
 	msgAllSet         = "✅ All set! I'll send you the daily problem at <b>%s</b> (%s)"
 	msgSessionExpired = "⚠️ Session expired. Please use /setup to start over."
+	msgMessageExpired = "⚠️ This message is too old. Use /today to get a fresh one."
+	msgNotSubscribed  = "⚠️ Use /setup to subscribe first."
 	msgDisabled       = "🛑 Notifications disabled."
 	msgFetchFailed    = "⚠️ Failed to fetch the problem from LeetCode. Try /today later."
 	msgInvalidTime    = "⚠️ Invalid format. Please enter time as <b>HH:MM</b> (e.g. <code>09:00</code>):"
