@@ -17,6 +17,7 @@ const (
 	cmdAbout       = "/about"
 	cmdSetup       = "/setup"
 	cmdToday       = "/today"
+	cmdStatus      = "/status"
 	cmdUnsubscribe = "/unsubscribe"
 	cmdRating      = "/rating"
 

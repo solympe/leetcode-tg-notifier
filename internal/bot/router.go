@@ -99,6 +99,8 @@ func (b *Bot) handleMessage(update tgbotapi.Update) {
 		b.handleSetup(chatID)
 	case isCommand(text, cmdToday):
 		b.handleToday(chatID)
+	case isCommand(text, cmdStatus):
+		b.handleStatus(chatID)
 	case isCommand(text, cmdRating):
 		b.handleRating(chatID)
 	case isCommand(text, cmdUnsubscribe):
