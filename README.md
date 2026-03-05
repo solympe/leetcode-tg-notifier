@@ -45,6 +45,8 @@ docker run -e BOT_TOKEN=your_token_here leetcode-notifier
 
 Chat configs are persisted in `config.json` in the working directory.
 
+> **Note:** Storage is intentionally minimal — a plain JSON file with no backup, migration, or durability guarantees. It is not designed to be a reliable long-term store.
+
 ## Development
 
 ```bash
