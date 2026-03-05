@@ -29,6 +29,9 @@ go.work.sum
 # env file
 .env
 
+# runtime data
+config.json
+
 # Editor/IDE
 # .idea/
 # .vscode/
