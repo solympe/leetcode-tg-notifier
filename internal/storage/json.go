@@ -18,7 +18,7 @@ type jsonStorage struct {
 	data jsonFile
 }
 
-func NewJSONStorage(path string) (Storage, error) {
+func NewJSONStorage(path string) (*jsonStorage, error) {
 	s := &jsonStorage{
 		path: path,
 		data: jsonFile{Chats: make(map[string]ChatConfig)},

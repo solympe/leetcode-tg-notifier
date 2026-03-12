@@ -6,7 +6,9 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"go.uber.org/mock/gomock"
 
+	"github.com/solympe/leetcode-tg-notifier/internal/bot/mocks"
 	"github.com/solympe/leetcode-tg-notifier/internal/storage"
 )
 
@@ -22,190 +24,223 @@ func makeCallbackQuery(cbID string, userID int64, firstName string, chatID int64
 	}
 }
 
-func lastCallbackText(sender *mockSender) string {
-	last := sender.lastSent()
-	if cb, ok := last.(tgbotapi.CallbackConfig); ok {
-		return cb.Text
-	}
-	return ""
-}
-
-func TestHandleDone_FirstClickCounts(t *testing.T) {
-	sender := newMockSender()
-	store := newMockStorage()
-	b := newTestBot(sender, store, &mockScheduler{}, &mockLCClient{})
-
-	chatID := int64(100)
-	_ = store.Set(storage.ChatConfig{ChatID: chatID, NotifyTime: "09:00", Timezone: "UTC"})
-
-	cb := makeCallbackQuery("cb1", 1, "Alice", chatID)
-	b.handleDone(cb, chatID, 1)
-
-	cfg, _ := store.Get(chatID)
-	stat := cfg.Members["1"]
-	if stat.Count != 1 {
-		t.Errorf("expected count 1, got %d", stat.Count)
-	}
-	if stat.Name != "Alice" {
-		t.Errorf("expected name Alice, got %q", stat.Name)
-	}
+func TestHandleDone(t *testing.T) {
 	today := time.Now().UTC().Format("2006-01-02")
-	if stat.LastSolvedDate != today {
-		t.Errorf("expected LastSolvedDate %q, got %q", today, stat.LastSolvedDate)
-	}
-	if text := lastCallbackText(sender); text != fmt.Sprintf("✅ Counted! Your total: %d", 1) {
-		t.Errorf("unexpected callback answer: %q", text)
-	}
-}
-
-func TestHandleDone_SecondClickSameDayRejected(t *testing.T) {
-	sender := newMockSender()
-	store := newMockStorage()
-	b := newTestBot(sender, store, &mockScheduler{}, &mockLCClient{})
-
-	today := time.Now().UTC().Format("2006-01-02")
-	chatID := int64(100)
-	_ = store.Set(storage.ChatConfig{
-		ChatID:     chatID,
-		NotifyTime: "09:00",
-		Timezone:   "UTC",
-		Members: map[string]storage.UserStat{
-			"1": {Name: "Alice", Count: 3, LastSolvedDate: today},
-		},
-	})
-
-	cb := makeCallbackQuery("cb2", 1, "Alice", chatID)
-	b.handleDone(cb, chatID, 1)
-
-	cfg, _ := store.Get(chatID)
-	if cfg.Members["1"].Count != 3 {
-		t.Errorf("count should not change, got %d", cfg.Members["1"].Count)
-	}
-	if text := lastCallbackText(sender); text != "Already counted today!" {
-		t.Errorf("unexpected callback answer: %q", text)
-	}
-}
-
-func TestHandleDone_NewDayAllowsCount(t *testing.T) {
-	sender := newMockSender()
-	store := newMockStorage()
-	b := newTestBot(sender, store, &mockScheduler{}, &mockLCClient{})
-
 	yesterday := time.Now().UTC().AddDate(0, 0, -1).Format("2006-01-02")
-	chatID := int64(100)
-	_ = store.Set(storage.ChatConfig{
-		ChatID:     chatID,
-		NotifyTime: "09:00",
-		Timezone:   "UTC",
-		Members: map[string]storage.UserStat{
-			"1": {Name: "Alice", Count: 5, LastSolvedDate: yesterday},
+
+	tests := []struct {
+		name       string
+		storeMock  func(*gomock.Controller) *mocks.MockchatStore
+		senderMock func(*gomock.Controller) *mocks.MocktelegramSender
+		cb         *tgbotapi.CallbackQuery
+		chatID     int64
+	}{
+		{
+			name:   "first click counts",
+			chatID: 100,
+			cb:     makeCallbackQuery("cb1", 1, "Alice", 100),
+			storeMock: func(ctrl *gomock.Controller) *mocks.MockchatStore {
+				m := mocks.NewMockchatStore(ctrl)
+				m.EXPECT().Get(int64(100)).Return(
+					storage.ChatConfig{ChatID: 100, NotifyTime: "09:00", Timezone: "UTC"}, true,
+				)
+				m.EXPECT().Set(storage.ChatConfig{
+					ChatID:     100,
+					NotifyTime: "09:00",
+					Timezone:   "UTC",
+					Members: map[string]storage.UserStat{
+						"1": {Name: "Alice", Count: 1, LastSolvedDate: today},
+					},
+				}).Return(nil)
+				return m
+			},
+			senderMock: func(ctrl *gomock.Controller) *mocks.MocktelegramSender {
+				m := mocks.NewMocktelegramSender(ctrl)
+				m.EXPECT().Request(tgbotapi.NewCallback("cb1", fmt.Sprintf("✅ Counted! Your total: %d", 1))).
+					Return(&tgbotapi.APIResponse{Ok: true}, nil)
+				return m
+			},
 		},
-	})
-
-	cb := makeCallbackQuery("cb3", 1, "Alice", chatID)
-	b.handleDone(cb, chatID, 1)
-
-	cfg, _ := store.Get(chatID)
-	if cfg.Members["1"].Count != 6 {
-		t.Errorf("expected count 6, got %d", cfg.Members["1"].Count)
-	}
-}
-
-func TestHandleDone_NoConfig_AnswersNotSubscribed(t *testing.T) {
-	sender := newMockSender()
-	store := newMockStorage()
-	b := newTestBot(sender, store, &mockScheduler{}, &mockLCClient{})
-
-	cb := makeCallbackQuery("cb4", 1, "Alice", 999)
-	b.handleDone(cb, 999, 1)
-
-	if text := lastCallbackText(sender); text != msgNotSubscribed {
-		t.Errorf("expected %q, got %q", msgNotSubscribed, text)
-	}
-}
-
-func TestHandleRating_Empty(t *testing.T) {
-	sender := newMockSender()
-	store := newMockStorage()
-	b := newTestBot(sender, store, &mockScheduler{}, &mockLCClient{})
-
-	chatID := int64(100)
-	_ = store.Set(storage.ChatConfig{ChatID: chatID, NotifyTime: "09:00", Timezone: "UTC"})
-
-	b.handleRating(chatID)
-
-	last := sender.lastSent()
-	msg, ok := last.(tgbotapi.MessageConfig)
-	if !ok {
-		t.Fatalf("expected MessageConfig, got %T", last)
-	}
-	if msg.Text != msgRatingEmpty {
-		t.Errorf("expected empty rating message, got %q", msg.Text)
-	}
-}
-
-func TestHandleRating_SingleUser_NoName(t *testing.T) {
-	sender := newMockSender()
-	store := newMockStorage()
-	b := newTestBot(sender, store, &mockScheduler{}, &mockLCClient{})
-
-	chatID := int64(100)
-	_ = store.Set(storage.ChatConfig{
-		ChatID:     chatID,
-		NotifyTime: "09:00",
-		Timezone:   "UTC",
-		Members: map[string]storage.UserStat{
-			"1": {Name: "Alice", Count: 7},
+		{
+			name:   "second click same day is rejected",
+			chatID: 100,
+			cb:     makeCallbackQuery("cb2", 1, "Alice", 100),
+			storeMock: func(ctrl *gomock.Controller) *mocks.MockchatStore {
+				m := mocks.NewMockchatStore(ctrl)
+				m.EXPECT().Get(int64(100)).Return(storage.ChatConfig{
+					ChatID:     100,
+					NotifyTime: "09:00",
+					Timezone:   "UTC",
+					Members: map[string]storage.UserStat{
+						"1": {Name: "Alice", Count: 3, LastSolvedDate: today},
+					},
+				}, true)
+				return m
+			},
+			senderMock: func(ctrl *gomock.Controller) *mocks.MocktelegramSender {
+				m := mocks.NewMocktelegramSender(ctrl)
+				m.EXPECT().Request(tgbotapi.NewCallback("cb2", "Already counted today!")).
+					Return(&tgbotapi.APIResponse{Ok: true}, nil)
+				return m
+			},
 		},
-	})
-
-	b.handleRating(chatID)
-
-	last := sender.lastSent()
-	msg, ok := last.(tgbotapi.MessageConfig)
-	if !ok {
-		t.Fatalf("expected MessageConfig, got %T", last)
+		{
+			name:   "new day allows count",
+			chatID: 100,
+			cb:     makeCallbackQuery("cb3", 1, "Alice", 100),
+			storeMock: func(ctrl *gomock.Controller) *mocks.MockchatStore {
+				m := mocks.NewMockchatStore(ctrl)
+				m.EXPECT().Get(int64(100)).Return(storage.ChatConfig{
+					ChatID:     100,
+					NotifyTime: "09:00",
+					Timezone:   "UTC",
+					Members: map[string]storage.UserStat{
+						"1": {Name: "Alice", Count: 5, LastSolvedDate: yesterday},
+					},
+				}, true)
+				m.EXPECT().Set(storage.ChatConfig{
+					ChatID:     100,
+					NotifyTime: "09:00",
+					Timezone:   "UTC",
+					Members: map[string]storage.UserStat{
+						"1": {Name: "Alice", Count: 6, LastSolvedDate: today},
+					},
+				}).Return(nil)
+				return m
+			},
+			senderMock: func(ctrl *gomock.Controller) *mocks.MocktelegramSender {
+				m := mocks.NewMocktelegramSender(ctrl)
+				m.EXPECT().Request(tgbotapi.NewCallback("cb3", fmt.Sprintf("✅ Counted! Your total: %d", 6))).
+					Return(&tgbotapi.APIResponse{Ok: true}, nil)
+				return m
+			},
+		},
+		{
+			name:   "no config answers not subscribed",
+			chatID: 999,
+			cb:     makeCallbackQuery("cb4", 1, "Alice", 999),
+			storeMock: func(ctrl *gomock.Controller) *mocks.MockchatStore {
+				m := mocks.NewMockchatStore(ctrl)
+				m.EXPECT().Get(int64(999)).Return(storage.ChatConfig{}, false)
+				return m
+			},
+			senderMock: func(ctrl *gomock.Controller) *mocks.MocktelegramSender {
+				m := mocks.NewMocktelegramSender(ctrl)
+				m.EXPECT().Request(tgbotapi.NewCallback("cb4", msgNotSubscribed)).
+					Return(&tgbotapi.APIResponse{Ok: true}, nil)
+				return m
+			},
+		},
 	}
-	if findPos(msg.Text, "Alice") != -1 {
-		t.Errorf("single-user rating should not contain name, got %q", msg.Text)
-	}
-	if findPos(msg.Text, "7") == -1 {
-		t.Errorf("single-user rating should contain count, got %q", msg.Text)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			b := New(
+				tt.senderMock(ctrl),
+				"TestBot",
+				tt.storeMock(ctrl),
+				mocks.NewMocklcFetcher(ctrl),
+				mocks.NewMocktaskScheduler(ctrl),
+			)
+
+			b.handleDone(tt.cb, tt.chatID, 1)
+		})
 	}
 }
 
-func TestHandleRating_SortedByCount(t *testing.T) {
-	sender := newMockSender()
-	store := newMockStorage()
-	b := newTestBot(sender, store, &mockScheduler{}, &mockLCClient{})
-
-	chatID := int64(100)
-	_ = store.Set(storage.ChatConfig{
-		ChatID:     chatID,
-		NotifyTime: "09:00",
-		Timezone:   "UTC",
-		Members: map[string]storage.UserStat{
-			"1": {Name: "Alice", Count: 5},
-			"2": {Name: "Bob", Count: 12},
-			"3": {Name: "Charlie", Count: 3},
+func TestHandleRating(t *testing.T) {
+	tests := []struct {
+		name         string
+		storeMock    func(*gomock.Controller) *mocks.MockchatStore
+		wantText     string
+		wantOrdering []string
+	}{
+		{
+			name: "empty - no members",
+			storeMock: func(ctrl *gomock.Controller) *mocks.MockchatStore {
+				m := mocks.NewMockchatStore(ctrl)
+				m.EXPECT().Get(int64(100)).Return(
+					storage.ChatConfig{ChatID: 100, NotifyTime: "09:00", Timezone: "UTC"}, true,
+				)
+				return m
+			},
+			wantText: msgRatingEmpty,
 		},
-	})
-
-	b.handleRating(chatID)
-
-	last := sender.lastSent()
-	msg, ok := last.(tgbotapi.MessageConfig)
-	if !ok {
-		t.Fatalf("expected MessageConfig, got %T", last)
+		{
+			name: "single user - name not shown",
+			storeMock: func(ctrl *gomock.Controller) *mocks.MockchatStore {
+				m := mocks.NewMockchatStore(ctrl)
+				m.EXPECT().Get(int64(100)).Return(storage.ChatConfig{
+					ChatID:     100,
+					NotifyTime: "09:00",
+					Timezone:   "UTC",
+					Members:    map[string]storage.UserStat{"1": {Name: "Alice", Count: 7}},
+				}, true)
+				return m
+			},
+		},
+		{
+			name: "multiple users sorted by count descending",
+			storeMock: func(ctrl *gomock.Controller) *mocks.MockchatStore {
+				m := mocks.NewMockchatStore(ctrl)
+				m.EXPECT().Get(int64(100)).Return(storage.ChatConfig{
+					ChatID:     100,
+					NotifyTime: "09:00",
+					Timezone:   "UTC",
+					Members: map[string]storage.UserStat{
+						"1": {Name: "Alice", Count: 5},
+						"2": {Name: "Bob", Count: 12},
+						"3": {Name: "Charlie", Count: 3},
+					},
+				}, true)
+				return m
+			},
+			wantOrdering: []string{"Bob", "Alice", "Charlie"},
+		},
 	}
 
-	text := msg.Text
-	bobPos := findPos(text, "Bob")
-	alicePos := findPos(text, "Alice")
-	charliePos := findPos(text, "Charlie")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
 
-	if bobPos > alicePos || alicePos > charliePos {
-		t.Errorf("rating not sorted by count: %q", text)
+			var sentText string
+			sender := mocks.NewMocktelegramSender(ctrl)
+			sender.EXPECT().Send(gomock.Any()).DoAndReturn(func(c tgbotapi.Chattable) (tgbotapi.Message, error) {
+				if msg, ok := c.(tgbotapi.MessageConfig); ok {
+					sentText = msg.Text
+				}
+				return tgbotapi.Message{}, nil
+			})
+
+			b := New(
+				sender,
+				"TestBot",
+				tt.storeMock(ctrl),
+				mocks.NewMocklcFetcher(ctrl),
+				mocks.NewMocktaskScheduler(ctrl),
+			)
+
+			b.handleRating(100)
+
+			if tt.wantText != "" && sentText != tt.wantText {
+				t.Errorf("text: got %q, want %q", sentText, tt.wantText)
+			}
+			for i := 1; i < len(tt.wantOrdering); i++ {
+				prev, curr := tt.wantOrdering[i-1], tt.wantOrdering[i]
+				if findPos(sentText, prev) > findPos(sentText, curr) {
+					t.Errorf("expected %q before %q in rating, got: %q", prev, curr, sentText)
+				}
+			}
+			if tt.name == "single user - name not shown" {
+				if findPos(sentText, "Alice") != -1 {
+					t.Errorf("single-user rating should not contain name, got %q", sentText)
+				}
+				if findPos(sentText, "7") == -1 {
+					t.Errorf("single-user rating should contain count, got %q", sentText)
+				}
+			}
+		})
 	}
 }
 

@@ -12,10 +12,3 @@ type ChatConfig struct {
 	Timezone   string              `json:"timezone"`
 	Members    map[string]UserStat `json:"members"`
 }
-
-type Storage interface {
-	Get(chatID int64) (ChatConfig, bool)
-	Set(cfg ChatConfig) error
-	Delete(chatID int64) error
-	All() []ChatConfig
-}
