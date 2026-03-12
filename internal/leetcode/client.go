@@ -8,7 +8,3 @@ type Problem struct {
 	Difficulty string
 	Tags       []string
 }
-
-type Client interface {
-	FetchDaily() (*Problem, error)
-}

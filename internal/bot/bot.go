@@ -1,38 +1,45 @@
 package bot
 
+//go:generate mockgen -source=bot.go -destination=mocks/mock_deps.go -package=mocks
+
 import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"github.com/solympe/leetcode-tg-notifier/internal/leetcode"
-	"github.com/solympe/leetcode-tg-notifier/internal/scheduler"
 	"github.com/solympe/leetcode-tg-notifier/internal/storage"
 )
 
-// TelegramSender is the subset of *tgbotapi.BotAPI used by Bot.
-// *tgbotapi.BotAPI satisfies this interface without any adapter.
-type TelegramSender interface {
+type telegramSender interface {
 	Send(c tgbotapi.Chattable) (tgbotapi.Message, error)
 	Request(c tgbotapi.Chattable) (*tgbotapi.APIResponse, error)
 	GetUpdatesChan(config tgbotapi.UpdateConfig) tgbotapi.UpdatesChannel
 }
 
-// Bot is the public interface for the Telegram bot.
-type Bot interface {
-	Run()
-	SetScheduler(sched scheduler.Scheduler)
-	SendDailyProblem(chatID int64)
+type chatStore interface {
+	Get(chatID int64) (storage.ChatConfig, bool)
+	Set(cfg storage.ChatConfig) error
+	Delete(chatID int64) error
+}
+
+type taskScheduler interface {
+	Schedule(chatID int64, cfg storage.ChatConfig) error
+	Remove(chatID int64)
+}
+
+type lcFetcher interface {
+	FetchDaily() (*leetcode.Problem, error)
 }
 
 type tgBot struct {
-	api     TelegramSender
+	api     telegramSender
 	botName string
-	store   storage.Storage
-	lc      leetcode.Client
-	sched   scheduler.Scheduler
+	store   chatStore
+	lc      lcFetcher
+	sched   taskScheduler
 	states  *stateStore
 }
 
-func New(api TelegramSender, botName string, store storage.Storage, lc leetcode.Client, sched scheduler.Scheduler) Bot {
+func New(api telegramSender, botName string, store chatStore, lc lcFetcher, sched taskScheduler) *tgBot {
 	return &tgBot{
 		api:     api,
 		botName: botName,
@@ -43,7 +50,7 @@ func New(api TelegramSender, botName string, store storage.Storage, lc leetcode.
 	}
 }
 
-func (b *tgBot) SetScheduler(sched scheduler.Scheduler) {
+func (b *tgBot) SetScheduler(sched taskScheduler) {
 	b.sched = sched
 }
 

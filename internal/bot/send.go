@@ -1,7 +1,9 @@
 package bot
 
 import (
+	"errors"
 	"log"
+	"net/http"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
@@ -17,6 +19,25 @@ func (b *tgBot) SendDailyProblem(chatID int64) {
 	}
 	if _, err := b.sendWithKB(chatID, leetcode.FormatProblem(p), doneKeyboard()); err != nil {
 		log.Printf("SendDailyProblem to %d: %v", chatID, err)
+		if isBotBlocked(err) {
+			b.removeSubscription(chatID)
+		}
+	}
+}
+
+// isBotBlocked reports whether the Telegram API error indicates
+// the bot was blocked by the user (HTTP 403 Forbidden).
+func isBotBlocked(err error) bool {
+	var tgErr *tgbotapi.Error
+	return errors.As(err, &tgErr) && tgErr.Code == http.StatusForbidden
+}
+
+// removeSubscription removes the cron job and persistent config for chatID.
+func (b *tgBot) removeSubscription(chatID int64) {
+	log.Printf("bot blocked by %d: removing subscription", chatID)
+	b.sched.Remove(chatID)
+	if err := b.store.Delete(chatID); err != nil {
+		log.Printf("store.Delete %d: %v", chatID, err)
 	}
 }
 

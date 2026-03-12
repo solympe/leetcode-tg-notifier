@@ -36,7 +36,7 @@ type httpClient struct {
 	http *http.Client
 }
 
-func NewHTTPClient(c *http.Client) Client {
+func NewHTTPClient(c *http.Client) *httpClient {
 	if c == nil {
 		c = http.DefaultClient
 	}

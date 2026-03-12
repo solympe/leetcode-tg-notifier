@@ -18,7 +18,7 @@ type cronScheduler struct {
 	entries map[int64]cron.EntryID
 }
 
-func NewCronScheduler(send SendFunc) Scheduler {
+func NewCronScheduler(send SendFunc) *cronScheduler {
 	c := cron.New()
 	c.Start()
 	return &cronScheduler{
