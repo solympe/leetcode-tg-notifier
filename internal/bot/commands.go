@@ -25,14 +25,15 @@ func (b *tgBot) handleAbout(chatID int64) {
 	b.sendMsg(chatID, msgAbout)
 }
 
+// handleSetup starts /setup over with a fresh prompt, discarding any other
+// in-progress session, so an abandoned one never blocks it.
 func (b *tgBot) handleSetup(chatID int64) {
-	if s := b.states.get(chatID); s == stateAwaitingTime || s == stateAwaitingTimezone {
-		return
-	}
+	b.states.clearAndGetPending(chatID)
 	b.states.set(chatID, stateAwaitingTime)
 	sent, err := b.sendWithKB(chatID, msgChooseTime, setupTimeKeyboard())
 	if err != nil {
 		log.Printf("handleSetup to %d: %v", chatID, err)
+		b.states.clearAndGetPending(chatID)
 		return
 	}
 	b.states.setSetupMsgID(chatID, sent.MessageID)
@@ -48,7 +49,7 @@ func (b *tgBot) handleStatus(chatID int64) {
 		b.sendMsg(chatID, msgStatusInactive)
 		return
 	}
-	b.sendMsg(chatID, fmt.Sprintf(msgStatusActive, cfg.NotifyTime, cfg.Timezone))
+	b.sendMsg(chatID, fmt.Sprintf(msgStatusActive, cfg.NotifyTime, cfg.Timezone, formatDifficulties(cfg.Difficulties)))
 }
 
 func (b *tgBot) handleUnsubscribe(chatID int64) {
@@ -96,38 +97,43 @@ func (b *tgBot) handleRating(chatID int64) {
 	b.sendMsg(chatID, sb.String())
 }
 
+// handleDone counts the presser's solve for today in one atomic update, so a
+// pick of the day saved concurrently by a cron send is kept.
 func (b *tgBot) handleDone(cb *tgbotapi.CallbackQuery, chatID int64, _ int) {
 	today := time.Now().UTC().Format("2006-01-02")
-	userID := cb.From.ID
-
-	cfg, ok := b.store.Get(chatID)
-	if !ok {
-		b.answerCB(cb.ID, msgNotSubscribed)
-		return
-	}
-	if cfg.Members == nil {
-		cfg.Members = make(map[string]storage.UserStat)
-	}
-
-	key := fmt.Sprintf("%d", userID)
-	stat := cfg.Members[key]
-	if stat.LastSolvedDate == today {
-		b.answerCB(cb.ID, "Already counted today!")
-		return
-	}
-
+	key := fmt.Sprintf("%d", cb.From.ID)
 	name := cb.From.FirstName
 	if name == "" {
 		name = "@" + cb.From.UserName
 	}
 
-	stat.Name = name
-	stat.Count++
-	stat.LastSolvedDate = today
-	cfg.Members[key] = stat
-	if err := b.store.Set(cfg); err != nil {
-		log.Printf("store.Set: %v", err)
+	var stat storage.UserStat
+	counted := false
+	found, err := b.store.Update(chatID, func(cfg *storage.ChatConfig) bool {
+		stat = cfg.Members[key]
+		if stat.LastSolvedDate == today {
+			return false
+		}
+		stat.Name = name
+		stat.Count++
+		stat.LastSolvedDate = today
+		if cfg.Members == nil {
+			cfg.Members = make(map[string]storage.UserStat)
+		}
+		cfg.Members[key] = stat
+		counted = true
+		return true
+	})
+	if err != nil {
+		log.Printf("store.Update: %v", err)
 	}
 
-	b.answerCB(cb.ID, fmt.Sprintf("✅ Counted! Your total: %d", stat.Count))
+	switch {
+	case !found:
+		b.answerCB(cb.ID, msgNotSubscribed)
+	case !counted:
+		b.answerCB(cb.ID, "Already counted today!")
+	default:
+		b.answerCB(cb.ID, fmt.Sprintf("✅ Counted! Your total: %d", stat.Count))
+	}
 }

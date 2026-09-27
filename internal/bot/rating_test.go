@@ -41,9 +41,8 @@ func TestHandleDone(t *testing.T) {
 			cb:     makeCallbackQuery("cb1", 1, "Alice", 100),
 			storeMock: func(ctrl *gomock.Controller) *mocks.MockchatStore {
 				m := mocks.NewMockchatStore(ctrl)
-				m.EXPECT().Get(int64(100)).Return(
-					storage.ChatConfig{ChatID: 100, NotifyTime: "09:00", Timezone: "UTC"}, true,
-				)
+				m.EXPECT().Update(gomock.Eq(int64(100)), gomock.Any()).
+					DoAndReturn(updateVia(m, storage.ChatConfig{ChatID: 100, NotifyTime: "09:00", Timezone: "UTC"}))
 				m.EXPECT().Set(storage.ChatConfig{
 					ChatID:     100,
 					NotifyTime: "09:00",
@@ -67,14 +66,14 @@ func TestHandleDone(t *testing.T) {
 			cb:     makeCallbackQuery("cb2", 1, "Alice", 100),
 			storeMock: func(ctrl *gomock.Controller) *mocks.MockchatStore {
 				m := mocks.NewMockchatStore(ctrl)
-				m.EXPECT().Get(int64(100)).Return(storage.ChatConfig{
+				m.EXPECT().Update(gomock.Eq(int64(100)), gomock.Any()).DoAndReturn(updateVia(m, storage.ChatConfig{
 					ChatID:     100,
 					NotifyTime: "09:00",
 					Timezone:   "UTC",
 					Members: map[string]storage.UserStat{
 						"1": {Name: "Alice", Count: 3, LastSolvedDate: today},
 					},
-				}, true)
+				}))
 				return m
 			},
 			senderMock: func(ctrl *gomock.Controller) *mocks.MocktelegramSender {
@@ -90,14 +89,14 @@ func TestHandleDone(t *testing.T) {
 			cb:     makeCallbackQuery("cb3", 1, "Alice", 100),
 			storeMock: func(ctrl *gomock.Controller) *mocks.MockchatStore {
 				m := mocks.NewMockchatStore(ctrl)
-				m.EXPECT().Get(int64(100)).Return(storage.ChatConfig{
+				m.EXPECT().Update(gomock.Eq(int64(100)), gomock.Any()).DoAndReturn(updateVia(m, storage.ChatConfig{
 					ChatID:     100,
 					NotifyTime: "09:00",
 					Timezone:   "UTC",
 					Members: map[string]storage.UserStat{
 						"1": {Name: "Alice", Count: 5, LastSolvedDate: yesterday},
 					},
-				}, true)
+				}))
 				m.EXPECT().Set(storage.ChatConfig{
 					ChatID:     100,
 					NotifyTime: "09:00",
@@ -121,7 +120,7 @@ func TestHandleDone(t *testing.T) {
 			cb:     makeCallbackQuery("cb4", 1, "Alice", 999),
 			storeMock: func(ctrl *gomock.Controller) *mocks.MockchatStore {
 				m := mocks.NewMockchatStore(ctrl)
-				m.EXPECT().Get(int64(999)).Return(storage.ChatConfig{}, false)
+				m.EXPECT().Update(gomock.Eq(int64(999)), gomock.Any()).Return(false, nil)
 				return m
 			},
 			senderMock: func(ctrl *gomock.Controller) *mocks.MocktelegramSender {

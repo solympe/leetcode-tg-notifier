@@ -2,9 +2,12 @@ package bot
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+
+	"github.com/solympe/leetcode-tg-notifier/internal/leetcode"
 )
 
 func startKeyboard() tgbotapi.InlineKeyboardMarkup {
@@ -18,6 +21,7 @@ func startKeyboard() tgbotapi.InlineKeyboardMarkup {
 			tgbotapi.NewInlineKeyboardButtonData("🏆 Rating", cbCmdRating),
 		),
 		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🎚 Difficulty", cbCmdDifficulty),
 			tgbotapi.NewInlineKeyboardButtonData("🛑 Unsubscribe", cbCmdUnsub),
 		),
 	)
@@ -81,6 +85,26 @@ func setupTzKeyboard() tgbotapi.InlineKeyboardMarkup {
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData(tzLabel("Bangkok", "Asia/Bangkok"), cbPrefixTz+"Asia/Bangkok"),
+		),
+	)
+}
+
+// difficultyKeyboard shows a toggle per difficulty, ticked when in selected,
+// and a Save button.
+func difficultyKeyboard(selected []string) tgbotapi.InlineKeyboardMarkup {
+	all := leetcode.AllDifficulties()
+	toggles := make([]tgbotapi.InlineKeyboardButton, 0, len(all))
+	for _, d := range all {
+		label := "⬜ " + d
+		if slices.Contains(selected, d) {
+			label = "✅ " + d
+		}
+		toggles = append(toggles, tgbotapi.NewInlineKeyboardButtonData(label, cbPrefixDiff+d))
+	}
+	return tgbotapi.NewInlineKeyboardMarkup(
+		toggles,
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("💾 Save", cbCmdDiffSave),
 		),
 	)
 }
