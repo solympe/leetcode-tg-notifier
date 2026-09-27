@@ -2,12 +2,15 @@ package bot
 
 import (
 	"errors"
+	"net/http"
 	"testing"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"go.uber.org/mock/gomock"
 
 	"github.com/solympe/leetcode-tg-notifier/internal/bot/mocks"
+	"github.com/solympe/leetcode-tg-notifier/internal/leetcode"
 	"github.com/solympe/leetcode-tg-notifier/internal/storage"
 )
 
@@ -313,6 +316,193 @@ func TestHandleUnsubscribe(t *testing.T) {
 			)
 
 			b.handleUnsubscribe(100)
+		})
+	}
+}
+
+// fetchesDaily expects a single FetchDaily returning today's daily of
+// difficulty; a random fetch fails the test.
+func fetchesDaily(difficulty string) func(*gomock.Controller) *mocks.MocklcFetcher {
+	return func(ctrl *gomock.Controller) *mocks.MocklcFetcher {
+		m := mocks.NewMocklcFetcher(ctrl)
+		m.EXPECT().FetchDaily().Return(testDaily(difficulty), nil)
+		return m
+	}
+}
+
+// TestHandleDaily checks that /daily sends the official daily whatever the
+// chat's difficulty. The store mocks expect nothing but the removal of a chat
+// that blocked the bot, so /daily neither reads nor saves the pick of the day.
+func TestHandleDaily(t *testing.T) {
+	tests := []struct {
+		name       string
+		lcMock     func(*gomock.Controller) *mocks.MocklcFetcher
+		senderMock func(*gomock.Controller) *mocks.MocktelegramSender
+		storeMock  func(*gomock.Controller) *mocks.MockchatStore
+		schedMock  func(*gomock.Controller) *mocks.MocktaskScheduler
+	}{
+		{
+			// The chat is subscribed to Easy, so /today would send a random
+			// Easy problem instead of this Hard daily.
+			name:   "daily of an unsubscribed difficulty is sent as is",
+			lcMock: fetchesDaily("Hard"),
+			senderMock: func(ctrl *gomock.Controller) *mocks.MocktelegramSender {
+				m := mocks.NewMocktelegramSender(ctrl)
+				m.EXPECT().Send(gomock.Eq(problemMsg(leetcode.FormatProblem(testDaily("Hard"))))).
+					Return(tgbotapi.Message{MessageID: 1}, nil)
+				return m
+			},
+			storeMock: mocks.NewMockchatStore,
+			schedMock: mocks.NewMocktaskScheduler,
+		},
+		{
+			name:   "chat without a subscription gets the daily",
+			lcMock: fetchesDaily("Medium"),
+			senderMock: func(ctrl *gomock.Controller) *mocks.MocktelegramSender {
+				m := mocks.NewMocktelegramSender(ctrl)
+				m.EXPECT().Send(gomock.Eq(problemMsg(leetcode.FormatProblem(testDaily("Medium"))))).
+					Return(tgbotapi.Message{MessageID: 1}, nil)
+				return m
+			},
+			storeMock: mocks.NewMockchatStore,
+			schedMock: mocks.NewMocktaskScheduler,
+		},
+		{
+			name: "fetch error sends fetch-failed message",
+			lcMock: func(ctrl *gomock.Controller) *mocks.MocklcFetcher {
+				m := mocks.NewMocklcFetcher(ctrl)
+				m.EXPECT().FetchDaily().Return(nil, errors.New("timeout"))
+				return m
+			},
+			senderMock: func(ctrl *gomock.Controller) *mocks.MocktelegramSender {
+				m := mocks.NewMocktelegramSender(ctrl)
+				m.EXPECT().Send(gomock.Eq(textMsg(testChatID, msgFetchFailed))).Return(tgbotapi.Message{}, nil)
+				return m
+			},
+			storeMock: mocks.NewMockchatStore,
+			schedMock: mocks.NewMocktaskScheduler,
+		},
+		{
+			name:   "bot blocked by user removes subscription",
+			lcMock: fetchesDaily("Hard"),
+			senderMock: func(ctrl *gomock.Controller) *mocks.MocktelegramSender {
+				m := mocks.NewMocktelegramSender(ctrl)
+				m.EXPECT().Send(gomock.Eq(problemMsg(leetcode.FormatProblem(testDaily("Hard"))))).
+					Return(tgbotapi.Message{}, &tgbotapi.Error{
+						Code:    http.StatusForbidden,
+						Message: "Forbidden: bot was blocked by the user",
+					})
+				return m
+			},
+			storeMock: func(ctrl *gomock.Controller) *mocks.MockchatStore {
+				m := mocks.NewMockchatStore(ctrl)
+				m.EXPECT().Delete(testChatID).Return(nil)
+				return m
+			},
+			schedMock: func(ctrl *gomock.Controller) *mocks.MocktaskScheduler {
+				m := mocks.NewMocktaskScheduler(ctrl)
+				m.EXPECT().Remove(testChatID)
+				return m
+			},
+		},
+		{
+			// No Remove or Delete expected — gomock fails the test if they are called.
+			name:   "non-403 send error keeps subscription intact",
+			lcMock: fetchesDaily("Hard"),
+			senderMock: func(ctrl *gomock.Controller) *mocks.MocktelegramSender {
+				m := mocks.NewMocktelegramSender(ctrl)
+				m.EXPECT().Send(gomock.Eq(problemMsg(leetcode.FormatProblem(testDaily("Hard"))))).
+					Return(tgbotapi.Message{}, &tgbotapi.Error{Code: http.StatusTooManyRequests})
+				return m
+			},
+			storeMock: mocks.NewMockchatStore,
+			schedMock: mocks.NewMocktaskScheduler,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			b := New(
+				tt.senderMock(ctrl),
+				"TestBot",
+				tt.storeMock(ctrl),
+				tt.lcMock(ctrl),
+				tt.schedMock(ctrl),
+			)
+			// A pick of the day is in flight for the chat; /daily must not wait for it.
+			unlock := b.pickLocks.lock(testChatID)
+
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				b.handleDaily(testChatID)
+			}()
+			select {
+			case <-done:
+				unlock()
+			case <-time.After(time.Second):
+				t.Fatal("handleDaily waited for the chat's pick lock")
+			}
+		})
+	}
+}
+
+func TestDailyEntryPoints(t *testing.T) {
+	chat := &tgbotapi.Chat{ID: testChatID}
+	daily := problemMsg(leetcode.FormatProblem(testDaily("Hard")))
+
+	sendsDaily := func(ctrl *gomock.Controller) *mocks.MocktelegramSender {
+		m := mocks.NewMocktelegramSender(ctrl)
+		m.EXPECT().Send(gomock.Eq(daily)).Return(tgbotapi.Message{MessageID: 1}, nil)
+		return m
+	}
+
+	tests := []struct {
+		name       string
+		update     tgbotapi.Update
+		senderMock func(*gomock.Controller) *mocks.MocktelegramSender
+		lcMock     func(*gomock.Controller) *mocks.MocklcFetcher
+	}{
+		{
+			name:       "/daily command",
+			update:     tgbotapi.Update{Message: &tgbotapi.Message{Chat: chat, Text: "/daily"}},
+			senderMock: sendsDaily,
+			lcMock:     fetchesDaily("Hard"),
+		},
+		{
+			name:       "/daily command addressed to the bot",
+			update:     tgbotapi.Update{Message: &tgbotapi.Message{Chat: chat, Text: "/daily@TestBot"}},
+			senderMock: sendsDaily,
+			lcMock:     fetchesDaily("Hard"),
+		},
+		{
+			name:   "LeetCode daily button on the start keyboard",
+			update: tgbotapi.Update{CallbackQuery: pressButton("cb1", testChatID, 3, cbCmdDaily)},
+			senderMock: func(ctrl *gomock.Controller) *mocks.MocktelegramSender {
+				m := mocks.NewMocktelegramSender(ctrl)
+				gomock.InOrder(
+					m.EXPECT().Request(gomock.Eq(tgbotapi.NewCallback("cb1", ""))).Return(answered, nil),
+					m.EXPECT().Send(gomock.Eq(daily)).Return(tgbotapi.Message{MessageID: 1}, nil),
+				)
+				return m
+			},
+			lcMock: fetchesDaily("Hard"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			b := New(
+				tt.senderMock(ctrl),
+				"TestBot",
+				mocks.NewMockchatStore(ctrl),
+				tt.lcMock(ctrl),
+				mocks.NewMocktaskScheduler(ctrl),
+			)
+
+			b.handleMessage(tt.update)
 		})
 	}
 }

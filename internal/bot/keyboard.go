@@ -14,6 +14,7 @@ func startKeyboard() tgbotapi.InlineKeyboardMarkup {
 	return tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("📅 Today's problem", cbCmdToday),
+			tgbotapi.NewInlineKeyboardButtonData("🗓 LeetCode daily", cbCmdDaily),
 			tgbotapi.NewInlineKeyboardButtonData("⚙️ Setup", cbCmdSetup),
 		),
 		tgbotapi.NewInlineKeyboardRow(

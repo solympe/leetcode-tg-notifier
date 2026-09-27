@@ -34,6 +34,10 @@ func (b *tgBot) handleCallback(cb *tgbotapi.CallbackQuery) {
 		b.answerCB(cb.ID, "")
 		b.SendDailyProblem(chatID)
 
+	case cb.Data == cbCmdDaily:
+		b.answerCB(cb.ID, "")
+		b.handleDaily(chatID)
+
 	case cb.Data == cbCmdStatus:
 		b.answerCB(cb.ID, "")
 		b.handleStatus(chatID)
@@ -101,6 +105,8 @@ func (b *tgBot) handleMessage(update tgbotapi.Update) {
 		b.handleDifficulty(chatID)
 	case isCommand(text, cmdToday):
 		b.handleToday(chatID)
+	case isCommand(text, cmdDaily):
+		b.handleDaily(chatID)
 	case isCommand(text, cmdStatus):
 		b.handleStatus(chatID)
 	case isCommand(text, cmdRating):
