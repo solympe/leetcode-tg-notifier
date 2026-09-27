@@ -26,8 +26,14 @@ func (b *tgBot) SendDailyProblem(chatID int64) {
 		b.sendMsg(chatID, msgFetchFailed)
 		return
 	}
+	b.sendProblem(chatID, text)
+}
+
+// sendProblem sends a problem's text with the Done button and removes the
+// subscription of a chat that blocked the bot.
+func (b *tgBot) sendProblem(chatID int64, text string) {
 	if _, err := b.sendWithKB(chatID, text, doneKeyboard()); err != nil {
-		log.Printf("SendDailyProblem to %d: %v", chatID, err)
+		log.Printf("sendProblem to %d: %v", chatID, err)
 		if isBotBlocked(err) {
 			b.removeSubscription(chatID)
 		}

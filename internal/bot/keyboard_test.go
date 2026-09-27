@@ -98,31 +98,47 @@ func TestDifficultyKeyboard(t *testing.T) {
 	}
 }
 
-func TestStartKeyboard_LastRow(t *testing.T) {
-	tests := []struct {
-		name  string
-		index int
-		label string
-		data  string
-	}{
-		{name: "difficulty", index: 0, label: "🎚 Difficulty", data: cbCmdDifficulty},
-		{name: "unsubscribe", index: 1, label: "🛑 Unsubscribe", data: cbCmdUnsub},
-	}
-
+func TestStartKeyboard_Rows(t *testing.T) {
+	type button struct{ label, data string }
 	rows := startKeyboard().InlineKeyboard
-	last := rows[len(rows)-1]
-	if len(last) != len(tests) {
-		t.Fatalf("expected %d buttons in the last row, got %d", len(tests), len(last))
+
+	tests := []struct {
+		name string
+		row  int
+		want []button
+	}{
+		{
+			name: "first row",
+			row:  0,
+			want: []button{
+				{"📅 Today's problem", cbCmdToday},
+				{"🗓 LeetCode daily", cbCmdDaily},
+				{"⚙️ Setup", cbCmdSetup},
+			},
+		},
+		{
+			name: "last row",
+			row:  len(rows) - 1,
+			want: []button{
+				{"🎚 Difficulty", cbCmdDifficulty},
+				{"🛑 Unsubscribe", cbCmdUnsub},
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			btn := last[tt.index]
-			if btn.Text != tt.label {
-				t.Errorf("label: got %q, want %q", btn.Text, tt.label)
+			row := rows[tt.row]
+			if len(row) != len(tt.want) {
+				t.Fatalf("expected %d buttons, got %d", len(tt.want), len(row))
 			}
-			if btn.CallbackData == nil || *btn.CallbackData != tt.data {
-				t.Errorf("data: got %v, want %q", btn.CallbackData, tt.data)
+			for i, btn := range row {
+				if btn.Text != tt.want[i].label {
+					t.Errorf("button %d label: got %q, want %q", i, btn.Text, tt.want[i].label)
+				}
+				if btn.CallbackData == nil || *btn.CallbackData != tt.want[i].data {
+					t.Errorf("button %d data: got %v, want %q", i, btn.CallbackData, tt.want[i].data)
+				}
 			}
 		})
 	}

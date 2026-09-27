@@ -11,6 +11,7 @@ const (
 	cbPrefixDiff    = "diff:"
 	cbCmdSetup      = "/setup"
 	cbCmdToday      = "/today"
+	cbCmdDaily      = "/daily"
 	cbCmdUnsub      = "/unsubscribe"
 	cbCmdStatus     = "/status"
 	cbCmdDone       = "done"
@@ -22,6 +23,7 @@ const (
 	cmdAbout       = "/about"
 	cmdSetup       = "/setup"
 	cmdToday       = "/today"
+	cmdDaily       = "/daily"
 	cmdStatus      = "/status"
 	cmdUnsubscribe = "/unsubscribe"
 	cmdRating      = "/rating"
@@ -29,7 +31,7 @@ const (
 
 	parseMode = "HTML"
 
-	msgWelcome           = "Hi! I'm <b>%s</b>. I help you subscribe to a daily LeetCode challenge newsletter and get the problem of the day anytime.\n\nCommands:\n• /setup — create your daily subscription\n• /difficulty — choose problem difficulty\n• /today — get today's LeetCode problem now\n• /rating — show solve leaderboard\n• /status — check your subscription status\n• /about — learn more about this bot"
+	msgWelcome           = "Hi! I'm <b>%s</b>. I help you subscribe to a daily LeetCode challenge newsletter and get the problem of the day anytime.\n\nCommands:\n• /setup — create your daily subscription\n• /difficulty — choose problem difficulty\n• /today — get today's problem (your difficulty)\n• /daily — get the official LeetCode daily (any difficulty)\n• /rating — show solve leaderboard\n• /status — check your subscription status\n• /about — learn more about this bot"
 	msgAbout             = "For questions, suggestions, and bug reports — DM @solympe"
 	msgChooseTime        = "Choose notification time or type your own (<b>HH:MM</b>, 24h):"
 	msgChooseTz          = "Time: <b>%s</b>\n\nChoose your timezone or type it manually (e.g. <code>Europe/Moscow</code>)\nhttps://en.wikipedia.org/wiki/List_of_tz_database_time_zones"

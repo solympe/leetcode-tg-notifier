@@ -9,6 +9,7 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
+	"github.com/solympe/leetcode-tg-notifier/internal/leetcode"
 	"github.com/solympe/leetcode-tg-notifier/internal/storage"
 )
 
@@ -41,6 +42,18 @@ func (b *tgBot) handleSetup(chatID int64) {
 
 func (b *tgBot) handleToday(chatID int64) {
 	b.SendDailyProblem(chatID)
+}
+
+// handleDaily sends the official daily whatever the chat's difficulty, so it
+// neither reads nor saves the pick of the day and works without a subscription.
+func (b *tgBot) handleDaily(chatID int64) {
+	daily, err := b.lc.FetchDaily()
+	if err != nil {
+		log.Printf("FetchDaily: %v", err)
+		b.sendMsg(chatID, msgFetchFailed)
+		return
+	}
+	b.sendProblem(chatID, leetcode.FormatProblem(daily))
 }
 
 func (b *tgBot) handleStatus(chatID int64) {
