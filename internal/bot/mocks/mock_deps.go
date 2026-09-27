@@ -153,6 +153,21 @@ func (mr *MockchatStoreMockRecorder) Set(cfg any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Set", reflect.TypeOf((*MockchatStore)(nil).Set), cfg)
 }
 
+// Update mocks base method.
+func (m *MockchatStore) Update(chatID int64, fn func(*storage.ChatConfig) bool) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Update", chatID, fn)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Update indicates an expected call of Update.
+func (mr *MockchatStoreMockRecorder) Update(chatID, fn any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Update", reflect.TypeOf((*MockchatStore)(nil).Update), chatID, fn)
+}
+
 // MocktaskScheduler is a mock of taskScheduler interface.
 type MocktaskScheduler struct {
 	ctrl     *gomock.Controller
@@ -240,4 +255,19 @@ func (m *MocklcFetcher) FetchDaily() (*leetcode.Problem, error) {
 func (mr *MocklcFetcherMockRecorder) FetchDaily() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FetchDaily", reflect.TypeOf((*MocklcFetcher)(nil).FetchDaily))
+}
+
+// FetchRandom mocks base method.
+func (m *MocklcFetcher) FetchRandom(difficulties []string) (*leetcode.Problem, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "FetchRandom", difficulties)
+	ret0, _ := ret[0].(*leetcode.Problem)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// FetchRandom indicates an expected call of FetchRandom.
+func (mr *MocklcFetcherMockRecorder) FetchRandom(difficulties any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FetchRandom", reflect.TypeOf((*MocklcFetcher)(nil).FetchRandom), difficulties)
 }

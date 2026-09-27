@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"os"
+	"slices"
 	"sync"
 )
 
@@ -59,18 +61,50 @@ func key(chatID int64) string {
 	return fmt.Sprintf("%d", chatID)
 }
 
+// cloneConfig deep-copies the reference fields of cfg, so the stored configs
+// and the ones callers hold never share memory; nil fields stay nil.
+func cloneConfig(cfg ChatConfig) ChatConfig {
+	cfg.Members = maps.Clone(cfg.Members)
+	cfg.Difficulties = slices.Clone(cfg.Difficulties)
+	if cfg.DailyPick != nil {
+		pick := *cfg.DailyPick
+		pick.Tags = slices.Clone(pick.Tags)
+		cfg.DailyPick = &pick
+	}
+	return cfg
+}
+
 func (s *jsonStorage) Get(chatID int64) (ChatConfig, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cfg, ok := s.data.Chats[key(chatID)]
-	return cfg, ok
+	return cloneConfig(cfg), ok
 }
 
 func (s *jsonStorage) Set(cfg ChatConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.data.Chats[key(cfg.ChatID)] = cfg
+	s.data.Chats[key(cfg.ChatID)] = cloneConfig(cfg)
 	return s.save()
+}
+
+// Update applies fn to the chat's config and saves the result if fn returns
+// true, all under one lock, so concurrent updates of a chat never overwrite
+// each other. It reports whether the chat exists; a missing one is neither
+// passed to fn nor created.
+func (s *jsonStorage) Update(chatID int64, fn func(cfg *ChatConfig) bool) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cfg, ok := s.data.Chats[key(chatID)]
+	if !ok {
+		return false, nil
+	}
+	cfg = cloneConfig(cfg)
+	if !fn(&cfg) {
+		return true, nil
+	}
+	s.data.Chats[key(chatID)] = cloneConfig(cfg)
+	return true, s.save()
 }
 
 func (s *jsonStorage) Delete(chatID int64) error {
@@ -85,7 +119,7 @@ func (s *jsonStorage) All() []ChatConfig {
 	defer s.mu.Unlock()
 	result := make([]ChatConfig, 0, len(s.data.Chats))
 	for _, cfg := range s.data.Chats {
-		result = append(result, cfg)
+		result = append(result, cloneConfig(cfg))
 	}
 	return result
 }

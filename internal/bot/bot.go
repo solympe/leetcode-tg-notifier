@@ -18,6 +18,7 @@ type telegramSender interface {
 type chatStore interface {
 	Get(chatID int64) (storage.ChatConfig, bool)
 	Set(cfg storage.ChatConfig) error
+	Update(chatID int64, fn func(cfg *storage.ChatConfig) bool) (bool, error)
 	Delete(chatID int64) error
 }
 
@@ -28,25 +29,28 @@ type taskScheduler interface {
 
 type lcFetcher interface {
 	FetchDaily() (*leetcode.Problem, error)
+	FetchRandom(difficulties []string) (*leetcode.Problem, error)
 }
 
 type tgBot struct {
-	api     telegramSender
-	botName string
-	store   chatStore
-	lc      lcFetcher
-	sched   taskScheduler
-	states  *stateStore
+	api       telegramSender
+	botName   string
+	store     chatStore
+	lc        lcFetcher
+	sched     taskScheduler
+	states    *stateStore
+	pickLocks *chatLocks // one pick of the day at a time per chat
 }
 
 func New(api telegramSender, botName string, store chatStore, lc lcFetcher, sched taskScheduler) *tgBot {
 	return &tgBot{
-		api:     api,
-		botName: botName,
-		store:   store,
-		lc:      lc,
-		sched:   sched,
-		states:  newStateStore(),
+		api:       api,
+		botName:   botName,
+		store:     store,
+		lc:        lc,
+		sched:     sched,
+		states:    newStateStore(),
+		pickLocks: newChatLocks(),
 	}
 }
 

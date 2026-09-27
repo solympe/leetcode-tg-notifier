@@ -1,7 +1,6 @@
 package bot
 
 import (
-	"fmt"
 	"log"
 	"strings"
 
@@ -47,27 +46,24 @@ func (b *tgBot) handleCallback(cb *tgbotapi.CallbackQuery) {
 		b.answerCB(cb.ID, "")
 		b.handleUnsubscribe(chatID)
 
+	case cb.Data == cbCmdDifficulty:
+		b.answerCB(cb.ID, "")
+		b.handleDifficulty(chatID)
+
 	case cb.Data == cbCmdDone:
 		b.handleDone(cb, chatID, msgID)
 
+	case cb.Data == cbCmdDiffSave:
+		b.handleDifficultySave(cb, chatID, msgID)
+
 	case strings.HasPrefix(cb.Data, cbPrefixTime):
-		b.answerCB(cb.ID, "")
-		t := strings.TrimPrefix(cb.Data, cbPrefixTime)
-		b.states.set(chatID, stateAwaitingTimezone)
-		b.states.setPendingTime(chatID, t)
-		b.states.setSetupMsgID(chatID, msgID)
-		b.editMsgWithKB(chatID, msgID, fmt.Sprintf(msgChooseTz, t), setupTzKeyboard())
+		b.handleTimeButton(cb, chatID, msgID)
 
 	case strings.HasPrefix(cb.Data, cbPrefixTz):
-		b.answerCB(cb.ID, "")
-		tz := strings.TrimPrefix(cb.Data, cbPrefixTz)
-		notifyTime := b.states.clearAndGetPending(chatID)
-		if notifyTime == "" {
-			b.sendMsg(chatID, msgSessionExpired)
-			return
-		}
-		b.finishSetup(chatID, notifyTime, tz)
-		b.editMsg(chatID, msgID, fmt.Sprintf(msgAllSet, notifyTime, tz))
+		b.handleTimezoneButton(cb, chatID, msgID)
+
+	case strings.HasPrefix(cb.Data, cbPrefixDiff):
+		b.handleDifficultyToggle(cb, chatID, msgID)
 	}
 }
 
@@ -101,6 +97,8 @@ func (b *tgBot) handleMessage(update tgbotapi.Update) {
 		b.handleAbout(chatID)
 	case isCommand(text, cmdSetup):
 		b.handleSetup(chatID)
+	case isCommand(text, cmdDifficulty):
+		b.handleDifficulty(chatID)
 	case isCommand(text, cmdToday):
 		b.handleToday(chatID)
 	case isCommand(text, cmdStatus):

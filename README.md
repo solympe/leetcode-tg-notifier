@@ -7,6 +7,7 @@ A Telegram bot that sends you the LeetCode daily challenge at a time you choose,
 ## Features
 
 - Daily LeetCode problem delivered at your chosen time and timezone
+- Choose your difficulty levels (Easy / Medium / Hard) — if the daily doesn't match, you get a random free problem of your level instead, the same one all day
 - `/today` — get today's problem on demand
 - **Done button** on each problem — mark it as solved (once per day per user)
 - `/rating` — leaderboard across all chat members
@@ -16,7 +17,8 @@ A Telegram bot that sends you the LeetCode daily challenge at a time you choose,
 
 | Command | Description |
 |---|---|
-| `/setup` | Configure your notification time and timezone |
+| `/setup` | Configure your notification time, timezone and difficulty |
+| `/difficulty` | Choose which difficulty levels you want |
 | `/today` | Get today's LeetCode problem now |
 | `/rating` | Show the solve leaderboard |
 | `/status` | Check your current subscription |
