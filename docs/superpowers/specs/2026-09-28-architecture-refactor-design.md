@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Date | 2026-09-28 |
-| Status | Approved design, ready for an implementation plan |
+| Status | Approved design, implemented on `refactor/architecture`; sizes measured in section 14 |
 | Base | `origin/main` @ `8879c84` (branch `refactor/architecture`) |
 | Module | `github.com/solympe/leetcode-tg-notifier` (Go 1.26.1) |
 
@@ -27,7 +27,7 @@ The whole bot lives in `internal/bot`: 10 production files (1096 lines), 9 test 
 **Goals**
 
 1. Clear boundaries. There is a stdlib-only domain and a use-case core behind consumer-side ports. Telegram, LeetCode, JSON-file and cron are thin adapters, with one composition root.
-2. More compact code: production shrinks by about 17% and hand-written unit tests by about 53% (section 14).
+2. More compact code: production stays the size of the old code (1635 vs 1648 lines: ctx threading and the ports cost what the deleted duplication saved) and hand-written unit tests shrink by about 40% (4596 → 2766), with the full handler flows in the integration suite (section 14).
 3. A hermetic integration suite that boots the real object graph against in-process fakes. It is written first, against today's code, so it can gate the switch.
 4. User-visible behaviour, texts, keyboards and `config.json` stay compatible. The only exceptions are the approved deviations in section 11.
 5. `context.Context` is threaded through every I/O port now, so a later DB adapter is a drop-in.
@@ -93,14 +93,14 @@ main ──► internal/app ──► tgbotapi
 ### 3.3 Runtime flow
 
 ```
-update: Telegram ─► tgbotapi poller ─► app.Run ─► app.handle (per-update ctx) ─► telegram.handler.Handle
-                                                                                      │ (service port)
-                                                                                      ▼
-                                                                               notifier.service
-                                                        ┌───────────────┬─────────────┴───┬──────────────────┐
-                                                        ▼               ▼                 ▼                  ▼
-                                                   chatStore      problemSource     dailyScheduler      messenger
-                                                   (storage)      (leetcode)        (scheduler)         (telegram.sender ─► Bot API)
+update: Telegram ─► tgbotapi poller ─► app.Run (per-update ctx) ─► telegram.handler.Handle
+                                                                        │ (service port)
+                                                                        ▼
+                                                                 notifier.service
+                                          ┌───────────────┬─────────────┴───┬──────────────────┐
+                                          ▼               ▼                 ▼                  ▼
+                                     chatStore      problemSource     dailyScheduler      messenger
+                                     (storage)      (leetcode)        (scheduler)         (telegram.sender ─► Bot API)
 
 cron:   cron tick / RunNow ─► job closure (ctx from jobs root) ─► service.SendToday ─► the same ports
 ```
@@ -116,8 +116,8 @@ Construction order inside `app.New`: store → api (getMe) → jobs root ctx →
 | Interfaces live at the consumer | `deps.go` in notifier and telegram, `randSource` in leetcode (unchanged), `jobRunner` and `updateHandler` in app. No exported interface anywhere. |
 | Constructors return `*privateStruct` | `notifier.New` → `*service`, `telegram.NewSender` → `*sender`, `NewHandler` → `*handler`, `leetcode.NewHTTPClient` → `*httpClient`, `storage.NewJSONStorage` → `*jsonStorage`, `scheduler.New` → `*cronScheduler`, `app.New` → `*application`. domain has no constructors. |
 | `//go:generate` only in regular files, `-source` mode, one `mocks/` per consumer | `notifier/deps.go`, `telegram/deps.go` and `leetcode/http.go`. |
-| gomock only; table-driven tests; mock factories as struct fields | Every unit-test plan in section 4. Every `Test` function is a table, even single-scenario ones such as `TestSendTodayConcurrent` (one row). Expectations are set inside the factories, never in the loop body. |
-| `gomock.Eq` for exact arguments | `ctx := t.Context()` is declared once at the top of each `Test` function, before the table, so the factories' `gomock.Eq(ctx)` and the call under test share one value (subtests are not parallel). Numeric IDs are typed in matchers, e.g. `gomock.Eq(int64(100))`: gomock v0.6.0's `Eq` does not convert an untyped `int` to `int64`, so `Eq(100)` never matches. `DoAndReturn` is used only where `Eq` cannot express the check (applying `fn`, capturing a job, inspecting a derived ctx). |
+| gomock only; table-driven tests; mock factories as struct fields | Every unit-test plan in section 4. Every `Test` function is a table, even single-scenario ones such as `TestJob` (one row). Expectations are set inside the factories, never in the loop body. |
+| `gomock.Eq` for exact arguments | `ctx := t.Context()` is declared once at the top of each `Test` function, before the table, so the factories' `gomock.Eq(ctx)` and the call under test share one value (subtests are not parallel). Numeric IDs are typed in matchers, e.g. `gomock.Eq(int64(100))`: gomock v0.6.0's `Eq` does not convert an untyped `int` to `int64`, so `Eq(100)` never matches. `DoAndReturn` is used only where `Eq` cannot express the check (applying `fn`, inspecting a derived ctx), and `Do` only to make a call panic. |
 | `errors.As` plus `http.StatusForbidden` | `telegram.isBotBlocked`. |
 | Import grouping stdlib, third-party, local | Enforced by goimports `local-prefixes`. |
 
@@ -130,7 +130,7 @@ internal/app/        app.go
 internal/domain/     model.go rules.go errors.go                    model_test.go rules_test.go
 internal/notifier/   deps.go service.go delivery.go mocks/mock_deps.go   service_test.go delivery_test.go
 internal/telegram/   deps.go sender.go handler.go dialog.go view.go mocks/mock_deps.go
-                                                                    sender_test.go handler_test.go dialog_test.go view_test.go
+                                                                    sender_test.go handler_test.go view_test.go
 internal/leetcode/   http.go mocks/mock_deps.go                     http_test.go
 internal/storage/    json.go testdata/legacy_config.json            json_test.go
 internal/scheduler/  cron.go                                        cron_test.go
@@ -140,13 +140,13 @@ Deleted: `internal/bot/` (all of it), `leetcode/client.go`, `leetcode/client_tes
 
 ## 4. Per-package design
 
-### 4.1 `main.go` (about 25 lines)
+### 4.1 `main.go` (29 lines)
 
 ```go
 func main() {
 	token := os.Getenv("BOT_TOKEN")
 	if token == "" {
-		log.Fatal("BOT_TOKEN environment variable is not set") // same text as today
+		log.Fatal("BOT_TOKEN environment variable is not set")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -156,11 +156,13 @@ func main() {
 	})
 	a, err := app.New(ctx, app.Config{Token: token, StoragePath: os.Getenv("STORAGE_PATH")})
 	if err != nil {
-		log.Fatal(err) // app.New wraps as "storage: …" / "NewBotAPI: …", matching today's log lines
+		log.Fatal(err) // "storage: …" or "NewBotAPI: …"
 	}
 	a.Run(ctx)
 }
 ```
+
+The `BOT_TOKEN`, `storage: …` and `NewBotAPI: …` lines keep today's texts (section 11). The first signal starts the graceful shutdown of 6.5; the `AfterFunc` restores the default handler, so a second signal kills the process.
 
 ### 4.2 `internal/app`
 
@@ -174,7 +176,7 @@ type Config struct {
 
 const (
 	telegramTimeout = 75 * time.Second // long poll is 60s
-	pollTimeout     = 60               // seconds, as today
+	pollTimeout     = 60               // seconds
 	updateTimeout   = 2 * time.Minute  // per-update budget
 )
 
@@ -193,11 +195,16 @@ type application struct {
 	api        *tgbotapi.BotAPI // concrete third-party type: GetUpdatesChan, StopReceivingUpdates, GetUpdates
 	sched      jobRunner
 	bot        updateHandler
-	cancelJobs context.CancelFunc
+	cancelJobs context.CancelFunc // cancels the jobs root
 }
 
+// New builds the object graph and restores every stored schedule. It calls
+// getMe, so it fails on a bad token or an unreachable Telegram endpoint.
 func New(ctx context.Context, cfg Config) (*application, error)
-func (a *application) Run(ctx context.Context) // call once per application
+
+// Run handles updates one at a time until ctx is done, then shuts down in
+// the numbered steps below. Call it once per application.
+func (a *application) Run(ctx context.Context)
 ```
 
 `New`:
@@ -211,7 +218,7 @@ jobs, cancelJobs := context.WithCancel(context.WithoutCancel(ctx))             /
 sched := scheduler.New()
 svc := notifier.New(jobs, store, leetcode.NewHTTPClient(cfg.LeetCodeEndpoint, nil), sched, telegram.NewSender(api), time.Now)
 if err := svc.Restore(ctx); err != nil {
-	log.Print(err) // never fatal, as today
+	log.Print(err) // never fatal
 }
 return &application{api: api, sched: sched, bot: telegram.NewHandler(api, svc, api.Self.UserName), cancelJobs: cancelJobs}, nil
 ```
@@ -224,12 +231,13 @@ func (a *application) Run(ctx context.Context) {
 	a.sched.Start()
 	defer a.sched.Stop() // 4. no new firings; waits for running jobs
 	updates := a.api.GetUpdatesChan(tgbotapi.UpdateConfig{Timeout: pollTimeout})
-	stop := context.AfterFunc(ctx, a.api.StopReceivingUpdates) // 1. exactly once (a second call panics)
-	defer stop()
-	base := context.WithoutCancel(ctx) // started work must survive SIGTERM
+	context.AfterFunc(ctx, a.api.StopReceivingUpdates) // 1. exactly once (a second call panics)
+	base := context.WithoutCancel(ctx)                 // started work must survive SIGTERM
 	last := 0
 	for u := range updates { // 2. drains buffered updates and the last in-flight poll
-		a.handle(base, u)
+		uctx, cancel := context.WithTimeout(base, updateTimeout)
+		a.bot.Handle(uctx, u) // recovers panics, so cancel always runs
+		cancel()
 		last = u.UpdateID
 	}
 	if last > 0 { // 3. confirm the final batch so the next start does not redeliver it
@@ -238,15 +246,11 @@ func (a *application) Run(ctx context.Context) {
 		}
 	}
 }
-
-func (a *application) handle(base context.Context, u tgbotapi.Update) {
-	ctx, cancel := context.WithTimeout(base, updateTimeout)
-	defer cancel()
-	a.bot.Handle(ctx, u)
-}
 ```
 
-Unit tests: none. The package is covered by the integration suite in the same directory.
+The `AfterFunc` is not unregistered: `Run` returns only after ctx is done, so the func has always run by then.
+
+Unit tests: none. The package is covered by the integration suite in the same directory, whose harness wraps `a.sched` to pin that `Run` starts and stops the scheduler (8.2).
 
 ### 4.3 `internal/domain`
 
@@ -301,7 +305,7 @@ var (
 
 `RecordSolve`: key `strconv.FormatInt(userID, 10)`. On the same `day` it returns `(current count, false)` and does not refresh the name. Otherwise it sets the name, increments the count, sets the date, allocates `Members` if nil, and returns `(new count, true)`. This is today's `handleDone` logic.
 
-Unit tests: pure tables, no mocks, ported from `TestWantsDaily`, the `validPick` rows of `TestSendDailyProblem` and `TestHandleDone`. `Difficulties` (order, fresh slice); `Wants` (nil, empty, subscribed, case-insensitive, not subscribed); `PickFor` (no pick, other date, unsubscribed difficulty, valid); `RecordSolve` (nil `Members`, same day rejected with the total, next day counted, name refreshed); `Standings` (count desc, ties by name). `model_test.go` checks that a legacy flat `daily_pick` decodes into `Pick{Problem, DailyDifficulty}` and round-trips.
+Unit tests: pure tables, no mocks, ported from `TestWantsDaily`, the `validPick` rows of `TestSendDailyProblem` and `TestHandleDone`. `Difficulties` (order, fresh slice); `Wants` (nil, empty, subscribed, case-insensitive, not subscribed); `PickFor` (no pick, other date, unsubscribed difficulty, valid with a case-insensitive match); `RecordSolve` (nil `Members`, same day rejected with the total and the name kept, next day counted with the name refreshed, another member keyed by decimal user ID); `Standings` (count desc, ties by name). `TestChatJSON` in `model_test.go` checks that a legacy flat `daily_pick` decodes into `Pick{Problem, DailyDifficulty}` and is written back in the (g) key order, and that missing `members` and `difficulties` decode to nil, with `members` written as `null`.
 
 ### 4.4 `internal/notifier`
 
@@ -386,20 +390,20 @@ func (s *service) deliver(ctx context.Context, chatID int64, p domain.Pick, err 
 ```
 
 Unit tests: in `package notifier`, table-driven, with factories `func(*gomock.Controller) *mocks.MockX`. A mock with no expectations is passed as the bare constructor. Tests call the method under test with the test-level `ctx := t.Context()` (3.5) and assert with `gomock.Eq(ctx)` that the same ctx reaches every port. The only exception is calls made from inside a job closure: they get a ctx derived from `jobs`, so those expectations match ctx with `gomock.Any()`, and `TestJob` checks the derived ctx itself. The clock is fixed.
-- `TestSendToday` re-expresses the 16 decision rows of today's `TestSendDailyProblem` on the ports, plus a Get-error row:
-  - FetchDaily error: SendFetchFailed.
-  - Unsubscribed chat, empty set, or subscribed daily (case-insensitive): `SendProblem(Eq(Pick{Problem: daily}))`, no FetchRandom. A subscribed daily beats a same-day pick.
+- `TestSend` (12 rows) covers `SendToday` and, via a `daily` field, `SendDaily`:
+  - Store read error: SendFetchFailed.
+  - A subscribed daily beats a same-day pick: `SendProblem(Eq(Pick{Problem: daily}))`, no FetchRandom.
   - Valid pick: resent, with no FetchRandom and no Update.
-  - Stale or now-unsubscribed pick: `FetchRandom(Eq(set))`, then Update saves `Pick{Date: daily.Date, DailyDifficulty: daily.Difficulty}`.
+  - A random draw of every subscribed difficulty (`FetchRandom(Eq(set))`) is saved onto the chat as Update finds it (members added since the Get are kept). A now-unsubscribed same-day pick is replaced the same way.
   - Lost race (Update's DoAndReturn applies fn to a chat already holding pick A): A is sent and fn returns false.
-  - FetchRandom or Get error: SendFetchFailed, nothing saved. Update `found=false` or a save error: the pick is still sent.
-  - `fmt.Errorf("x: %w", domain.ErrBlocked)`: Remove and Delete. Any other send error: nothing more.
-- `TestSendTodayConcurrent`: 8 goroutines under `-race` share one mutex-guarded Chat in Get and Update, against a slow FetchRandom that returns a new problem per call. Every SendProblem gets the same Pick, equal to the stored one.
-- `TestSendDaily`: in the daily and fetch-failure rows the store factory is the bare `mocks.NewMockchatStore`, which proves the pick is never read or written. The blocked row expects `Remove(Eq(int64(100)))` and `Delete(Eq(ctx), Eq(int64(100)))`.
-- `TestSubscribe`: new chat; an existing chat keeps `Members` and `DailyPick`; `Schedule(Eq(int64(100)), Eq("09:00"), Eq("UTC"), Any())`. The captured job (DoAndReturn stores it in a variable declared at the test level), run in the loop body, performs a SendToday. A store error still schedules and is returned.
-- `TestJob`: the job's ctx has a deadline ≤ `jobTimeout` (DoAndReturn on FetchDaily). A cancelled `jobs` root reaches the ports as `context.Canceled`.
-- `TestRestore`: two Schedules; one failure gives a joined error and the other chat is still scheduled; an `All` error is returned.
-- `TestSetDifficulties` (found / missing → `ErrNotSubscribed` / store error), `TestUnsubscribe`, `TestSolve` (counted / already / missing / write error returns the total / refused returns 0).
+  - Chat deleted before the save (`found=false`), or a save error: the pick is still sent. Any other send error: nothing more (no Remove, no Delete).
+  - Daily with a bare `mocks.NewMockchatStore` (the store is never read or written); daily fetch failure (SendFetchFailed, whose own error is only logged); daily blocked (`fmt.Errorf("x: %w", domain.ErrBlocked)`: `Remove(Eq(int64(100)))` and `Delete(Eq(ctx), Eq(int64(100)))`).
+- The empty and nil sets, the case-insensitive match, stale dates and the FetchDaily/FetchRandom errors are left to domain `TestWants`/`TestPickFor` and integration rows 6–8 and 14. Concurrency is integration row 9, and adoption is the lost-race row.
+- `TestJob` (one row): the job's ctx derives from the `jobs` root and has a deadline within `jobTimeout` (DoAndReturn on FetchDaily). The cancelled root is integration row 19.
+- `TestSubscribe`: new chat; an existing chat keeps `Members` and `DailyPick`; a failed save still schedules, and both errors are joined. Each expects `Schedule(Eq(int64(100)), Eq("09:00"), Eq("UTC"), Any())`; the job it is handed is not run here, but by integration rows 8, 13 and 15.
+- `TestRestore` (3 rows): both chats are scheduled in `All`'s order; failures do not stop the next chat and are joined; an `All` error is returned.
+- `TestSetDifficulties` (found keeps the pick / missing → `ErrNotSubscribed` / store error), `TestUnsubscribe` (one row: Remove, then Delete, whose error is returned; success is integration row 12), `TestSolve` (counted / already / missing / write error returns the total / refused returns 0).
+- There is no `TestSubscription`, because it is a pass-through.
 
 ### 4.5 `internal/telegram`
 
@@ -437,29 +441,23 @@ The private helpers are all ctx-first: `send(ctx, chatID, text, kb) (msgID int, 
 `handler.go`:
 
 ```go
-func NewHandler(api botAPI, svc service, botName string) *handler // builds its own sender and the commands table (a field, which avoids an init cycle)
+func NewHandler(api botAPI, svc service, botName string) *handler // builds its own sender and the commands table (a field: its entries are bound to h and svc)
 func (h *handler) Handle(ctx context.Context, u tgbotapi.Update)   // defer recover + log with debug.Stack()
 ```
 
 `dialog.go` and `view.go` are specified in section 7. Nothing in telegram creates a ctx: it uses the one `Handle` receives, and the `act` closures capture it.
 
-Unit tests (about 460 lines, with `MockbotAPI` and `Mockservice`; full flows live in the integration suite):
-- `TestHandleRouting` (update in, then the expected svc call or sent config):
-  - `/today`, `/today@TestBot` and `/today@Other` call `SendToday(Eq(ctx), Eq(int64(100)))`; `"/today extra"` and plain text outside a dialog do nothing.
-  - Each of the 7 menu callbacks gets `Request(Eq(NewCallback(id, "")))`, then its action, and the order is asserted. When the action is also a `MockbotAPI` call (the `/status` send), `gomock.InOrder` inside the api factory does this. When it is a `Mockservice` call, the api factory stores the answer's `*gomock.Call` in a test-level variable, and the svc factory chains `.After(answered)`. The loop body builds the api mock before the svc mock.
-  - A nil message gets `msgMessageExpired`; `bogus`, `/start` and `done:x` get `msgMenuExpired`.
-  - `/status` (subscribed / unsubscribed / `Any`), `/unsubscribe`, `/start`; a Subscription error sends nothing; a panicking svc is recovered.
-- `TestDone`: the toast per Solve result (a write error with total 1 gives Counted, a refused call gives `""`); the `@username` fallback via `Eq` on Solve's args.
-- `TestDialog` (edge branches):
-  - Stale inputs: a time button on another message or step, forged `time:25:00`, `tz:Local`.
-  - Difficulty buttons: `diff:Insane` gets `""` and no edit; an empty Save gets `msgPickAtLeastOne`, no svc call, and the session is kept.
-  - Saves: setup Save calls `Subscribe` with `Eq` args, and a Subscribe error still shows All set. `/difficulty` Save with `ErrNotSubscribed` edits to `msgNotSubscribed`.
-  - Sessions: a failed `/setup` send leaves no session; `/difficulty` in an unsubscribed chat keeps the existing session.
-- `TestSender`: the exact `MessageConfig`. A 403 satisfies `errors.Is(err, domain.ErrBlocked)` and still `errors.As` to `*tgbotapi.Error`; a 500 passes through unwrapped. A cancelled ctx returns `context.Canceled` with a bare `MockbotAPI` (no calls).
-- Pure tests:
-  - `formatPick` (daily, random, unparseable date; copied from `leetcode/format_test.go`), `formatRating` (1 and many members, 4th+ numbering) and `formatDifficulties`.
-  - Keyboards (rows, callback data), `tzLabel` with a half-hour zone.
-  - `validTime`, `validTimezone` (rejects `""`, `Local`, `Mars/Base`), `toggle` and canonical order.
+Unit tests (about 700 lines, with `MockbotAPI` and `Mockservice`):
+- `TestHandle` (`handler_test.go`): one table over `Handle`, one update per row, with the chat's session before and after. It holds only the branches the suite does not reach cheaply:
+  - the routing edge cases (`/today@Other`, surrounding spaces, `"/today extra"`, an unknown command, plain text, an empty update, a callback without its message, `bogus`, `/start` and `done:x`, a recovered panic);
+  - the `/difficulty`, `/status` and `/rating` menu buttons, pinning answer-before-action: the api factory stores the answer's `*gomock.Call` in a test-level variable, and either `gomock.InOrder` (an api action) or the svc factory's `.After(answered)` orders the action after it; the loop body builds the api mock first;
+  - Done's write-error (total 1 still gives Counted) and refused (`""`) toasts;
+  - stale, forged and cross-step buttons;
+  - `Subscription`, `Subscribe` and `SetDifficulties` errors, failed sends, and the session rules.
+
+  Every other flow is in integration rows 1–8, 10–12, 14, 15 and 20.
+- `TestSender`: the exact Done message; a 403, even wrapped, wraps `ErrBlocked` and keeps the `*tgbotapi.Error`; other errors pass through (`errors.Is`/`As`); fetch-failed is not mapped; a done ctx makes no call (`SendProblem` and `answer`, with a bare `MockbotAPI`).
+- Pure tests: the `formatPick` raw-date fallback (daily and random), `formatRating` from 4th place, the tz and difficulty keyboards, `tzLabel` including a negative half-hour zone, `validTime`, `validTimezone` (rejects `""`, `Local`, `Mars/Base`), `canonical`, `initialDifficulties` and `toggle`.
 
 ### 4.6 `internal/leetcode`
 
@@ -471,13 +469,14 @@ func (hc *httpClient) FetchDaily(ctx context.Context) (domain.Problem, error)
 func (hc *httpClient) FetchRandom(ctx context.Context, difficulties []string) (domain.Problem, error) // result has no Date
 ```
 
-`query(ctx, payload, out)` uses `http.NewRequestWithContext(ctx, http.MethodPost, hc.endpoint, bytes.NewReader(payload))`; the headers and the error wrapping (`"http: %w"`) are unchanged, so `errors.Is(err, context.Canceled)` holds. The 10s per-request client timeout stays, so the effective bound is whichever comes first. `FetchRandom` keeps today's algorithm: validate against `domain.Difficulties()`, choose the level uniformly (all three when empty), then rejection-sample with `paidOnly` filtered client-side, up to `maxRandomAttempts = 8`. Values replace `*Problem`. `client.go` is deleted, and `FormatProblem`, `FormatRandomProblem`, `formatDate` and `formatBody` move to `telegram/view.go`.
+`query(ctx, payload, out)` uses `http.NewRequestWithContext(ctx, http.MethodPost, hc.endpoint, bytes.NewReader(payload))`; the headers and the error wrapping (`"http: %w"`) are unchanged, so `errors.Is(err, context.Canceled)` holds. The daily payload is the fixed `dailyQuery`; the list payload is the `listQuery` template filled by `fetchOne(ctx, difficulty, skip)` (limit 1 and the upper-case difficulty, which is validated first, so it needs no JSON escaping). The 10s per-request client timeout stays, so the effective bound is whichever comes first. `FetchRandom` keeps today's algorithm: validate against `domain.Difficulties()`, choose the level uniformly (all three when empty), then rejection-sample with `paidOnly` filtered client-side, up to `maxRandomAttempts = 8`. Values replace `*Problem`. `client.go` is deleted, and `FormatProblem`, `FormatRandomProblem`, `formatDate` and `formatBody` move to `telegram/view.go`.
 
 Unit tests: the existing `http_test.go` is adapted to `NewHTTPClient(srv.URL, srv.Client())` and value returns.
-- FetchDaily: ok, non-200, empty title, bad JSON, headers.
-- FetchRandom: level via `MockrandSource`, paid draw rejected, empty draw, attempts exhausted, total 0, unknown difficulty makes no HTTP call, and the request variables.
-- `TestNewHTTPClient`: defaults, and an explicit endpoint.
-- New `TestContext`: a cancelled ctx gives `context.Canceled` with 0 server hits; a 50ms deadline against a handler that blocks until the request ctx is done fails within the deadline.
+- The test server asserts every request's method, headers and list variables, and the number of requests.
+- FetchDaily: ok, non-200, empty question, bad JSON.
+- FetchRandom: level via `MockrandSource`, the empty set choosing among all three, paid draw rejected, empty draw, attempts exhausted, total 0, non-200 on the count, bad JSON on a draw, and an unknown difficulty making no HTTP call.
+- `TestNewHTTPClient`: the nil-client default (10s), an explicit client, and an explicit endpoint.
+- New `TestContext`: a pre-cancelled ctx gives `context.Canceled` with 0 server hits; a ctx cancelled while the request is in flight aborts it with `context.Canceled` (1 hit); the handler drains the body and has a 5s backstop, so a ctx-ignoring client fails instead of hanging.
 - `TestAllDifficulties` moves to domain.
 
 ### 4.7 `internal/storage`
@@ -492,18 +491,19 @@ func (s *jsonStorage) All(ctx context.Context) ([]domain.Chat, error)           
 ```
 
 - Every method first returns `ctx.Err()` if the ctx is done, before taking the lock. Once a method has started, its read-modify-write and `os.WriteFile` run to completion, because file I/O is not cancellable.
-- `Upsert` and `Update` share `mutate(chatID, create bool, fn func(*domain.Chat) bool)`: clone in, run fn under the lock, force `ChatID` to the key, store a clone, then save. The memory-then-disk order is unchanged.
+- `Upsert` and `Update` share `mutate(ctx, chatID, create bool, fn func(*domain.Chat) bool)`, which does the ctx check for both: clone in, run fn under the lock, force `ChatID` to the key, store a clone, then save. The memory-then-disk order is unchanged.
 - File format unchanged: `{"chats":{"<id>":Chat}}` through the private `jsonFile`, key `strconv.FormatInt`, `json.MarshalIndent(…, "", "  ")`, `os.WriteFile(path, data, 0644)`. Deliberately **not** temp-file-plus-rename, which fails with EBUSY on a bind-mounted `config.json`.
 - A missing file means empty. A corrupt file is logged and the store starts fresh, as today (follow-up 1 changes this).
 - Deep clones in and out: `maps.Clone(Members)`, `slices.Clone(Difficulties)`, and a copy of `DailyPick` with cloned `Tags`.
 
 Unit tests (real files in `t.TempDir()`, no mocks):
-- Reload persistence, and a round trip of every field (nil stays nil).
-- No shared memory through Get, All or fn.
-- Update: missing, fn false, fn true, and 50 concurrent updates all kept (`-race`).
-- Upsert creates, and keeps `Members` and `DailyPick`.
-- New `TestCancelledContext`: each of the 5 methods returns `context.Canceled` and leaves both file bytes and memory unchanged.
-- `TestLoadLegacyConfig` keeps its rows and adds the golden fixture (5.2).
+- `TestUpsert` reloads a full chat and one with nil reference fields: it creates a missing chat under its key (fn's own `ChatID` is overridden), and keeps the `Members` and `DailyPick` of an existing one.
+- `TestStoredChatIsIndependent`: no shared memory through Get, All, a discarded Update fn or a saved one.
+- `TestUpdate`: fn false saves nothing, a missing chat is neither passed to fn nor created, and 50 concurrent updates are all saved (`-race`).
+- `TestDelete`: removes the chat from memory and file, and a missing chat leaves the others; it also pins `All`'s ChatID order.
+- New `TestCancelledContext`: each of the 5 methods returns `context.Canceled`, fn never runs, and the file bytes are unchanged (every change in memory is saved, so the memory is too).
+- `TestLoad` (the golden fixture as explicit `domain.Chat` values, no members, damaged files) and `TestRollbackSafety` (the written bytes equal the golden fixture with only (g) applied, and decode with the legacy structs).
+- `TestSaveInPlace`: Upsert and Delete rewrite `config.json` in place (`os.SameFile`).
 
 ### 4.8 `internal/scheduler`
 
@@ -526,11 +526,9 @@ func (s *cronScheduler) Stop() // waits for running jobs (below)
 - State as today: `c *cron.Cron`, `mu sync.Mutex`, `entries map[int64]cron.EntryID`. `SendFunc` and the storage import are deleted.
 
 Unit tests (`cron_test.go`, real cron, recording closures, no mocks):
-- `Next` lands on HH:MM in the zone within 24h (09:30 Europe/Moscow, 07:00 Asia/Dubai, UTC), before and after Start.
-- `"0900"`, `"9am"` and `"Mars/Base"` are errors that keep the previous entry.
-- Rescheduling replaces the entry (1 entry; RunNow runs the new func).
-- RunNow and Next are false after Remove and for an unknown chat.
-- Robustness: a self-Removing job inside RunNow does not deadlock (`-race`); a panicking job is recovered; Stop waits for a running job.
+- `TestSchedule` (never started): 09:30 Europe/Moscow, 07:00 Asia/Dubai and 23:59 UTC land on HH:MM within 24h and replace the entry (1 entry; RunNow runs the new func); `"0900"`, `"9am"`, `"25:00"` and `"Mars/Base"` are errors that keep it.
+- `TestRunNow`: runs; a self-Removing job does not deadlock (`-race`); a panic is recovered; works while cron runs and after Stop; false after Remove and for an unknown chat. Every row also checks Next and the entry counts: after Remove, both the cron entry and the map entry are gone.
+- `TestStop`: waits for a running job; a running job may call Remove.
 
 ## 5. Domain model and `config.json` compatibility
 
@@ -549,9 +547,9 @@ The JSON tags are a documented contract: renaming one requires a migration. A DB
 
 - Today's flat `daily_pick {date, daily_difficulty, id, title, link, difficulty, tags}` decodes fully into `Pick`.
 - `members: null` and a missing `difficulties` field decode to nil (no members; Any).
-- **Rollback safety.** A file written by the new code, decoded with a verbatim copy of today's `ChatConfig`, is `DeepEqual` to what the old binary reads.
+- **Rollback safety.** A file written by the new code, decoded with a verbatim copy of today's `ChatConfig`, is `DeepEqual` to what the old binary reads, and its bytes differ from the old file only by the key order below.
 - **Key order.** The only byte difference is inside `daily_pick`. Today it is `date, daily_difficulty, id, title, link, difficulty, tags`; after the change it is `date, id, title, link, difficulty, tags, daily_difficulty`. No reader depends on key order.
-- **Golden fixture.** `internal/storage/testdata/legacy_config.json` is produced by the **current** `jsonStorage` in migration step 3. A throwaway program outside the repo calls today's `NewJSONStorage` + `Set` for the three chats; its output bytes are committed and never regenerated. It holds a chat with members and a flat Easy `daily_pick`, a legacy chat with `members: null` and no `difficulties`, and a negative group ID. In step 3 the old `json_test.go` gains a `TestLoadLegacyConfig` row that loads it. In step 7 the new code must load it into the expected `domain.Chat`. After a new save, a test-local copy of today's `ChatConfig`, `UserStat` and `DailyPick` must decode it into exactly what the old binary would read.
+- **Golden fixture.** `internal/storage/testdata/legacy_config.json` is produced by the **current** `jsonStorage` in migration step 3. A throwaway program outside the repo calls today's `NewJSONStorage` + `Set` for the three chats; its output bytes are committed and never regenerated. It holds a chat with members and a flat Easy `daily_pick`, a legacy chat with `members: null` and no `difficulties`, and a negative group ID. In step 3 the old `json_test.go` gains a `TestLoadLegacyConfig` row that loads it. In step 7 the new code must load it into the expected `domain.Chat` values (`TestLoad`). After a new save, a test-local copy of today's `ChatConfig`, `UserStat` and `DailyPick` must decode it into exactly what the old binary would read (`TestRollbackSafety`).
 
 ## 6. Concurrency model
 
@@ -571,8 +569,7 @@ r.Date = daily.Date
 pick := domain.Pick{Problem: r, DailyDifficulty: daily.Difficulty}
 if _, err := s.store.Update(ctx, chatID, func(c *domain.Chat) bool {
 	if won, ok := c.PickFor(daily); ok { pick = won; return false } // someone committed first: adopt theirs
-	saved := pick
-	c.DailyPick = &saved
+	c.DailyPick = &pick // the store keeps a clone
 	return true
 }); err != nil {
 	log.Printf("save pick for %d: %v", chatID, err) // the pick is still sent
@@ -595,7 +592,7 @@ Cron runs each firing in its own goroutine, wrapped in `Recover`. `app.Run` hand
 | Work | ctx | Created in | Deadline | Cancelled when |
 |---|---|---|---|---|
 | Restore at startup | the ctx passed to `app.New`, which is main's `signal.NotifyContext` ctx | `main` | none | SIGINT/SIGTERM during startup |
-| Each update | `context.WithTimeout(context.WithoutCancel(runCtx), updateTimeout)` | `app.handle` | 2 min | the handler returns, or the deadline passes |
+| Each update | `context.WithTimeout(context.WithoutCancel(runCtx), updateTimeout)` | the `app.Run` loop | 2 min | the handler returns, or the deadline passes |
 | Callback `act` closures | the update's ctx, captured | `telegram` | as the update | as the update |
 | Jobs root | `context.WithCancel(context.WithoutCancel(newCtx))` | `app.New`; stored in `notifier.service.jobs` | none | `Run` returns, after `sched.Stop()` has waited (backstop) |
 | Each cron job (and `RunNow`) | `context.WithTimeout(s.jobs, jobTimeout)` | notifier `job` closure | 2 min | the job returns, the deadline passes, or the root is cancelled |
@@ -603,7 +600,7 @@ Cron runs each firing in its own goroutine, wrapped in `Recover`. `app.Run` hand
 
 **Why `WithoutCancel` for updates.** Telegram has already handed out the updates drained after SIGTERM. Buffered ones are confirmed by the poller's next offset, and the final batch by step 3 of 6.5. If their ctx were derived with cancellation from `runCtx`, every port would refuse, and those updates would be silently lost, which contradicts D3(e). The per-update ctx is still derived from `runCtx` (it inherits its values), and the 2-minute timeout bounds it. For the worst case of 1 daily plus 9 list requests at 10s each, plus a 75s send, the budget is only reached under a combined LeetCode and Telegram outage.
 
-**Why the jobs root is cancelled only after `sched.Stop()`.** The same rule applies to jobs. A daily send already running when SIGTERM arrives is finished, not aborted; aborting it would lose that chat's problem until the next day. `sched.Stop()` stops new firings and waits, and cancelling the root afterwards is only a backstop: no job ctx outlives `Run` (row 19). This is what "cancelled on shutdown" means in D2.
+**Why the jobs root is cancelled only after `sched.Stop()`.** The same rule applies to jobs. A daily send already running when SIGTERM arrives is finished, not aborted; aborting it would lose that chat's problem until the next day. `sched.Stop()` stops new firings and waits, and cancelling the root afterwards is only a backstop: no job ctx outlives `Run` (row 19). A job that runs while `Run` stops the scheduler still sends (row 22). This is what "cancelled on shutdown" means in D2.
 
 **A signal during startup.** `signal.NotifyContext` is installed before `app.New`, so SIGINT/SIGTERM no longer kill the process at once while `New` runs. A signal that arrives while `New` is blocked in `getMe` (no ctx API) takes effect when `getMe` returns, within the 75s client timeout. `Restore`'s `All` then refuses, the error is logged, and `Run` goes straight into the shutdown sequence of 6.5.
 
@@ -614,7 +611,7 @@ Cron runs each firing in its own goroutine, wrapped in `Recover`. `app.Run` hand
 1. SIGINT/SIGTERM cancels `runCtx`, and `context.AfterFunc` calls `StopReceivingUpdates` exactly once.
 2. The range loop keeps handling updates until the poller closes the channel after its in-flight poll (up to 60s in production). No buffered update is dropped, and each gets a live ctx (6.4).
 3. One `GetUpdates(Offset: last+1, Limit: 1)` confirms the final batch. Without it, the probe showed each such update handled twice after a restart.
-4. `sched.Stop()` stops new firings and waits for running jobs (each bounded by `jobTimeout`). Started work is allowed to finish; it is not cancelled.
+4. `sched.Stop()` stops new firings and waits for running jobs (each bounded by `jobTimeout`). Started work is allowed to finish; it is not cancelled. The scheduler's `TestStop` pins the wait, and row 22 that a job running at this step still sends.
 5. `cancelJobs()` cancels the jobs root as a backstop, so a job ctx can never outlive `Run` (row 19).
 
 Verified in a scratch probe over 5 restarts with an update injected during shutdown: every update was handled exactly once and the queue was fully confirmed. Every state change is persisted synchronously before its reply, so a SIGKILL loses nothing that was persisted. Unconfirmed updates are redelivered.
@@ -670,15 +667,15 @@ type session struct {
 	step                 step
 	msgID                int // the one message whose buttons are live
 	notifyTime, timezone string
-	selected             []string // canonical order
+	selected             []string // canonical order; replaced, never modified in place
 }
 
 type sessions struct{ mu sync.Mutex; m map[int64]session }
-// get(chatID) session (a copy with selected cloned; the zero step means none), set(chatID, s) (stores a clone), drop(chatID)
+// get(chatID) session (the zero step means none), set(chatID, s), drop(chatID); selected is replaced, never modified in place, so nothing is cloned
 // (s session) onDifficulty(msgID int) bool: (stepSetupDifficulty || stepEditDifficulty) && s.msgID == msgID
 ```
 
-In the table below, `msgX(args)` means `fmt.Sprintf(msgX, args)`, and `msgID` is the session's `msgID` (for a button, it must equal the pressed message's ID). This replaces `stateStore` (5 maps, `pendingSetup`, 11 accessors, 126 lines) with about 30 lines. A timezone step without a time can no longer be represented, so `msgSessionExpired` and its unreachable checks are deleted. Sessions stay in memory and are lost on restart, as today.
+In the table below, `msgX(args)` means `fmt.Sprintf(msgX, args)`, and `msgID` is the session's `msgID` (for a button, it must equal the pressed message's ID). This replaces `stateStore` (5 maps, `pendingSetup`, 11 accessors, 126 lines) with 45 lines (`step`, `session`, `sessions` and their methods, comments included). A timezone step without a time can no longer be represented, so `msgSessionExpired` and its unreachable checks are deleted. Sessions stay in memory and are lost on restart, as today.
 
 | Trigger | Condition | Effect |
 |---|---|---|
@@ -719,7 +716,7 @@ There is one answer point, so every callback is answered exactly once by constru
 
 - **Constants.** Every `msg*` constant from `const.go` is copied byte for byte, except `msgSessionExpired`. The inline strings from `commands.go` are copied too: `🏆 Solved: <b>%d</b>`, `🏆 <b>Rating</b>\n\n`, `%s %s — %d\n` for the 🥇🥈🥉 lines, `%d. %s — %d\n` from 4th place, `Already counted today!` and `✅ Counted! Your total: %d`.
 - **Keyboards.** start (3/2/2), done, time (8 buttons), tz (7 buttons in rows 2/2/2/1: six labelled by `tzLabel`, plus the fixed `UTC+0`) and difficulty (toggles and `💾 Save`) keep the same labels and callback data. So buttons on messages sent before the deploy keep working: `time:`, `tz:`, `diff:`, `/setup`, `/today`, `/daily`, `/unsubscribe`, `/status`, `done`, `/rating`, `/difficulty` and `diffsave`.
-- **`formatPick(p)`.** When `DailyDifficulty == ""` it uses `"📅 LeetCode Daily — %s\n\n%s"`. Otherwise it uses `"🎲 LeetCode Random — %s\nToday's daily is %s, so here's a random %s problem for you.\n\n%s"`. The body is `"🔢 %s. %s\n💪 Difficulty: %s\n🏷 %s\n\n🔗 https://leetcode.com%s"`, and the date is `"January 2, 2006"`, falling back to the raw string. This is identical to today's `FormatProblem` and `FormatRandomProblem`, with the old test cases copied as the reference.
+- **`formatPick(p)`.** When `DailyDifficulty == ""` it uses `"📅 LeetCode Daily — %s\n\n%s"`. Otherwise it uses `"🎲 LeetCode Random — %s\nToday's daily is %s, so here's a random %s problem for you.\n\n%s"`. The body is `"🔢 %s. %s\n💪 Difficulty: %s\n🏷 %s\n\n🔗 https://leetcode.com%s"`, and the date is `"January 2, 2006"`, falling back to the raw string. This is identical to today's `FormatProblem` and `FormatRandomProblem`, pinned by `TestSender`, the `formatPick` fallback rows and integration rows 6, 8 and 15.
 - Every `sendMessage` and `editMessageText` uses `parse_mode=HTML`, and `editMessageText` without a keyboard removes it, as today.
 
 ### 7.5 Error mapping and panic recovery
@@ -733,24 +730,25 @@ There is one answer point, so every callback is answered exactly once by constru
 
 ### 8.1 Build tag and layout
 
-Every file starts with `//go:build integration` and declares `package app`. The suite is white-box, so it reaches `a.sched.RunNow` and `a.sched.Next` without exported test hooks. The unit job never compiles it.
+Every file starts with `//go:build integration` and declares `package app`. The suite is white-box, so it reaches `a.sched.RunNow` and `a.sched.Next` without exported test hooks, and wraps `a.sched` in place. The unit job never compiles it.
 
 | File | Content | Size |
 |---|---|---|
-| `integration_test.go` | `TestMain` (quiet-minute guard), plus `TestIntegration`: a table of scenarios, each `t.Run` + `t.Parallel` on a fresh env | ~525 |
-| `harness_test.go` | `env` and its helpers, plus the cleanup invariants | ~220 |
-| `faketelegram_test.go` | fake Bot API | ~220 |
-| `fakeleetcode_test.go` | fake LeetCode GraphQL | ~110 |
+| `integration_test.go` | `TestMain` (quiet-minute guard), the expected texts and keyboards, `TestIntegration` (a table of scenarios, each `t.Run` + `t.Parallel` on a fresh env) and `TestNewFails` | ~740 |
+| `harness_test.go` | `env` and its helpers, the `lifecycle` wrapper, the legacy structs, and the cleanup that runs the invariants | ~370 |
+| `faketelegram_test.go` | fake Bot API and its strict invariants (`verify`) | ~460 |
+| `fakeleetcode_test.go` | fake LeetCode GraphQL | ~200 |
 
 ### 8.2 Harness
 
 | Helper | Behaviour |
 |---|---|
-| `start()` | `e.ctx, e.cancel = context.WithCancel(context.Background())`, then `a, err := New(e.ctx, Config{Token: "TEST:TOKEN", StoragePath: filepath.Join(dir, "config.json"), TelegramEndpoint: tg.srv.URL + "/bot%s/%s", LeetCodeEndpoint: lc.srv.URL + "/graphql"})`, then `go a.Run(e.ctx)`. This is exactly what main calls, with a fresh ctx per started app. Restore runs inside `New`, so `fire` and `scheduledAt` are valid once start returns. |
-| `stop()` | `e.cancel()`, then waits for `Run` to return (bounded by the fake's 100ms poll cap). It is guarded by `sync.Once` per started app and registered with `t.Cleanup` **after** the servers' `Close`, so the LIFO order stops the app first and tgbotapi's 3s retry path is never hit. `e.a` keeps pointing at the stopped app until the next `start()`. |
+| `start()` | `ctx, cancel := context.WithCancel(context.Background())`, then `a, err := New(ctx, Config{Token: testToken, StoragePath: filepath.Join(dir, "config.json"), TelegramEndpoint: tg.srv.URL + "/bot%s/%s", LeetCodeEndpoint: lc.srv.URL + "/graphql"})` (`testToken` is `"TEST:TOKEN"`), then `e.sched = &lifecycle{jobRunner: a.sched}; a.sched = e.sched`, then `go a.Run(ctx)`. This is exactly what main calls, with a fresh ctx per started app. Restore runs inside `New`, so `fire` and `scheduledAt` are valid once start returns. |
+| `stop()` | `stop` is a field set by `start` (`sync.Once`): it cancels that app's ctx and waits up to 5s for `Run` to return (in practice the fake's 100ms poll cap), then checks the `lifecycle`. `start` registers it with `t.Cleanup` **after** the servers' `Close`, so the LIFO order stops the app first and tgbotapi's 3s retry path is never hit. `e.a` keeps pointing at the stopped app until the next `start()`. |
+| `lifecycle` | `start` wraps `a.sched`; `stop` fails the test unless `Run` called `Start` and `Stop`; `onStop` runs when `Run` reaches shutdown step 4 (row 22). |
 | `restart()` | `sync()`, `stop()`, then `start()` on the same dir and fakes: a new BotAPI (getMe), the store reloaded from disk, a new cron, and Restore. |
 | `seed(json)` | Writes `config.json` in today's exact format before start. |
-| `stored(chatID) (legacyChat, bool)` | Decodes `config.json` from disk into a **test-local** copy of today's `ChatConfig`, `UserStat` and `DailyPick` tags. |
+| `stored(chatID) (legacyChat, bool)` | Decodes `config.json` from disk into a **test-local** copy of today's `ChatConfig`, `UserStat` and `DailyPick` tags. Wrapped by `storedEq(chat, want)` and `notStored(chat)`. |
 | `fire(chat) bool` | `a.sched.RunNow(chat)`: the real entry, with Recover, run synchronously. false means nothing is scheduled. |
 | `scheduledAt(chat, "09:00", "Europe/Moscow")` | `a.sched.Next(chat).In(loc)` has that HH:MM and is within 24h. |
 | `notScheduled(chat)` | `Next` returns false. |
@@ -760,7 +758,7 @@ Every file starts with `//go:build integration` and declares `package app`. The 
 | `pressInline(user, data)` | A callback with `Message == nil`. |
 | `block(chat)` | Later `sendMessage` calls to the chat return 403. |
 | `expectMessage(chat)` | The next unconsumed send or edit for the chat, in order. Waits up to 5s on a broadcast channel, and on timeout fails with a transcript dump. Wrapped by `sent(chat, text, kb)`, `edited(chat, msgID, text, kb)`, `rekeyed(chat, msgID, kb)` and `blockedAttempt(chat)`. |
-| `expectAnswer(cbID) string` | Keyed by cbID, separate from the message stream. |
+| `expectAnswer(cbID) string` | Keyed by cbID, separate from the message stream. Wrapped by `answered(cbID, want)`. |
 | `sync()` | Barrier: `/about` from reserved probe chat 1, then consumes the reply. The loop is sequential, so every earlier update has been handled. |
 | `expectQuiet(chat)` | `sync()`, then asserts that nothing new reached the chat. |
 
@@ -772,23 +770,23 @@ Users: `alice = {ID: 7, FirstName: "Alice"}` and `bob = {ID: 8, UserName: "bob"}
 |---|---|
 | wrong token | 401 `{"ok":false,"error_code":401}` |
 | `getMe` | `{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"Test","username":"TestBot"}}` |
-| `getUpdates` | At-least-once. Deletes queued updates with `update_id < offset` (a missing offset means 0), then returns up to `limit` (default 100) of the rest. When nothing is left and `timeout` is present, it waits up to 100ms for an enqueue or close. Without `timeout` (the confirming call) it returns immediately. It never errors. |
-| `sendMessage` | Records `chat_id`, `text`, `parse_mode` and `reply_markup` (decoded into `tgbotapi.InlineKeyboardMarkup`). Assigns increasing per-chat `message_id`s, updates the transcript (msgID → current text and keyboard) and returns a `Message` `{message_id, date, chat{id,type}, text}`. For a blocked chat it records the attempt and returns HTTP 403 `{"ok":false,"error_code":403,"description":"Forbidden: bot was blocked by the user"}`. |
-| `editMessageText` | Records and updates the transcript. A missing `reply_markup` removes the keyboard. Returns a `Message` (tgbotapi unmarshals `Send` results into `Message`). |
+| `getUpdates` | At-least-once. A request must carry either `timeout` (the poll) or `limit` (the confirming call); anything else fails the test. Deletes queued updates with `update_id < offset` (a missing offset means 0), then returns up to `limit` (default 100) of the rest. When nothing is left and `timeout` is present, it waits up to `pollCap` (100ms) for an enqueue or the client hanging up. Without `timeout` (the confirming call) it returns immediately. It never returns an error response. |
+| `sendMessage` | Records `chat_id`, `text`, `parse_mode` and `reply_markup` (decoded into `tgbotapi.InlineKeyboardMarkup`). Assigns increasing per-chat `message_id`s, updates the transcript (msgID → current text and keyboard) and returns a `Message` `{message_id, from, date, chat{id,type}, text, reply_markup}`. For a blocked chat it records the attempt and returns HTTP 403 `{"ok":false,"error_code":403,"description":"Forbidden: bot was blocked by the user"}`. |
+| `editMessageText` | Records and updates the transcript. A missing `reply_markup` removes the keyboard. Returns a `Message` (tgbotapi unmarshals `Send` results into `Message`). An edit of an unknown message fails the test (400). |
 | `editMessageReplyMarkup` | Records and replaces the keyboard; returns a `Message`. |
-| `answerCallbackQuery` | Records `answers[callback_query_id] = text` (absent means `""`) and returns `true`. |
+| `answerCallbackQuery` | Appends `text` to `answers[callback_query_id]` (absent means `""`) and returns `true`. An answer to a cbID the fake never issued fails the test. |
 | anything else | `t.Errorf`, plus a 404 JSON |
 
-**Strict invariants, checked at cleanup after the app stops:**
+**Strict invariants** (1–3 and 5 are checked at cleanup after the app stops, unless the test has already failed):
 1. Every issued cbID was answered exactly once.
 2. Every `sendMessage` and `editMessageText` used `parse_mode=HTML`.
 3. Every recorded call for every chat was consumed by an assertion, which catches extra or duplicate messages.
-4. No unknown method was called.
+4. An unknown method fails the test at once.
 5. The update queue is fully confirmed.
 
 ### 8.4 Fake LeetCode (`POST /graphql`)
 
-- Checks `Content-Type: application/json` and `User-Agent: Mozilla/5.0`.
+- Checks `Content-Type: application/json` and `User-Agent: Mozilla/5.0`. Another method or path, an unknown query or an unknown difficulty filter fails the test.
 - **Daily query** (`activeDailyCodingChallengeQuestion`): returns the current daily. The default is date `2026-09-28`, Hard, `4. Median of Two Sorted Arrays`, `/problems/median-of-two-sorted-arrays/`, tags `Array, Binary Search, Divide and Conquer`.
 - **List query** (`questionList(`): asserts `categorySlug=algorithms` and serves `{total, questions}` from a catalogue keyed by `filters.difficulty` and sliced by skip and limit. The catalogue has exactly **one free problem per level** (`total: 1`):
   - Easy: `1. Two Sum`, slug `two-sum`, tags `Array, Hash Table`.
@@ -796,7 +794,7 @@ Users: `alice = {ID: 7, FirstName: "Alice"}` and `bob = {ID: 8, UserName: "bob"}
   - Hard: `4. Median of Two Sorted Arrays`, slug `median-of-two-sorted-arrays`, tags `Array, Binary Search, Divide and Conquer`.
 
   So real `math/rand` is deterministic as long as random-path rows use single-level sets. Paid rejection stays in the unit tests.
-- **Knobs:** `setDaily(date, difficulty)`; `failDaily(bool)` and `failList(bool)` (500 responses); `setListDelay(d)`; `setRotating(bool)` (every draw returns a different free problem regardless of skip); `dailyCalls()` and `listCalls()`.
+- **Knobs:** `setDaily(date, difficulty)`; `failDaily(bool)` and `failList(bool)` (500 responses); `setListDelay(d)`; `setRotating(bool)` (every draw returns a different free problem regardless of skip, numbered by the list-call count); `dailyCalls()` and `listCalls()`.
 
 ### 8.5 Time
 
@@ -804,7 +802,7 @@ Cron has no clock injection. Triggering goes only through `fire` (RunNow), and t
 
 ### 8.6 Scenarios
 
-Rows 1–16 land in step 3. They **must pass against the old code**, then pass **unchanged** after the switch. Rows 17–19 are added after the switch (step 8), because they pin deliberate changes.
+Rows 1–16, the review-focus rows 20–21 and `TestNewFails` land in step 3. They **must pass against the old code**, then pass **unchanged** after the switch. Rows 17–19 and 22 are added after the switch: 17–19 in step 8, because they pin deliberate changes, and 22 later, with the harness's `lifecycle` wrapper, because it pins the shutdown order of 6.5 (step 4 before step 5). Numbers 17–19 were left free in step 3.
 
 | # | Scenario | Steps and assertions |
 |---|---|---|
@@ -821,14 +819,19 @@ Rows 1–16 land in step 3. They **must pass against the old code**, then pass *
 | 11 | Status and not-subscribed paths | The inactive text before setup, the active text after, and `Difficulty: <b>Any</b>` for a seeded legacy chat with no difficulties. `/difficulty` when unsubscribed, and Done on a `/daily` message in an unsubscribed chat, both give `⚠️ Use /setup to subscribe first.`. A `/difficulty` Save after `/unsubscribe` is edited to that text. |
 | 12 | Unsubscribe stops sends | The 🛑 button is answered `""` and sends `🛑 Notifications disabled.`. `fire` returns false, `notScheduled`, the chat is gone from `config.json`, and `/status` is inactive. |
 | 13 | Blocked bot auto-unsubscribes | Subscribe, then `block(chat)`. `fire` returns true with a `blockedAttempt`. The chat is removed from `config.json`, and `fire` then returns false. |
-| 14 | LeetCode outage | With `failDaily`, `/today`, `fire` and `/daily` each send `⚠️ Failed to fetch the problem from LeetCode. Try /today later.` and the subscription is kept. `failList` with an Easy-only chat on a Hard daily gives the same notice. |
+| 14 | LeetCode outage | With `failDaily`, `/today`, `fire` and `/daily` each send `⚠️ Failed to fetch the problem from LeetCode. Try /today later.` (`dailyCalls` is 3) and the subscription is kept. `failList` with an Easy-only chat on a Hard daily gives the same notice. |
 | 15 | Restart restores schedules | Seeded in today's format: a chat with members and a flat Easy `daily_pick` for 2026-09-28, plus a legacy chat with no difficulties and `members: null`. `scheduledAt` holds for both. `fire` resends the seeded pick with no list call, and the legacy chat gets the daily. `/rating` shows the seeded members. Then `/setup` a new chat, `restart()`, check `scheduledAt` for it, and `fire` delivers. `config.json` still decodes with the legacy struct. |
-| 16 | Shutdown drains exactly once | Chat 1600: `say(/about)`, then immediately `stop()` without waiting for the reply, then `start()` on the same dir. Exactly one `msgAbout` reaches the chat across both runs, then `expectQuiet`. This passes whether the update was drained before shutdown (with a live ctx) or redelivered after restart. A drop or a duplicate fails it. |
+| 16 | Shutdown drains exactly once | `sync()`, so the poller is in a long poll. Chat 1600: `say(/about)`, then immediately `stop()` without waiting for the reply, then `start()` on the same dir. Exactly one `msgAbout` reaches the chat across both runs, then `expectQuiet`. This passes whether the update was drained before shutdown (with a live ctx) or redelivered after restart. A drop or a duplicate fails it. |
 | 17 | Unknown callbacks are answered (deviation a) | `pressOn` with `bogus`, `/start` and `done:x` each get `⚠️ This menu is no longer active. Use /setup or /difficulty to start again.` and `expectQuiet`. |
 | 18 | Rating ties by name (deviation b) | Seeded members `Carol 2`, `Alice 2` and `Bob 3`. `/rating` gives `🥇 Bob — 3`, `🥈 Alice — 2`, `🥉 Carol — 2`. |
-| 19 | Jobs root is cancelled when Run returns | Subscribe, `sync()`, then `stop()`. `fire(chat)` on the stopped app returns true, but `dailyCalls` is unchanged (the request never leaves the client) and the strict invariant shows no Bot API call was made. |
+| 19 | Jobs root is cancelled when Run returns | Seeded chat 1900; `sync()`, then `stop()`. `fire(1900)` on the stopped app returns true, but `dailyCalls` is unchanged (the request never leaves the client), and the sender refuses the fetch-failed notice, so the strict invariants show no Bot API call for the chat. |
+| 20 | Restart mid-dialog expires its buttons, not Done | Seeded chat 2000 (Hard): the menu, a `/today` daily and a `/difficulty` prompt; chat 2001 runs `/setup` to the tz step. `restart()`. On 2001, `tz:Europe/Moscow` on the old prompt gets `msgMenuExpired`, typed `Europe/Moscow` is plain text (`expectQuiet`), and nothing is stored. On 2000, `diff:Easy` and `diffsave` on the old prompt expire, Done on the old problem gives `✅ Counted! Your total: 1`, and the old menu's 📅 button is answered `""` and sends the daily. `stored` keeps the difficulties and adds Alice. |
+| 21 | An unschedulable stored chat does not block the others | Seeded 2100 with `notify_time` `"0900"`, 2101 with zone `Mars/Base`, and 2102 at 07:00 Asia/Dubai. Restore logs the two failures: `notScheduled` for 2100 and 2101, while 2102 is `scheduledAt` 07:00 and `fire` delivers the daily. Nothing is deleted: both broken chats stay in `config.json` unchanged. |
+| 22 | A job running at shutdown still sends | Seeded chat 2200; `sync()`, then `stop()` with an `onStop` that fires chat 2200 while `Run` stops the scheduler. The daily arrives with Done, so step 4 precedes step 5 and the jobs root is detached from the signal ctx. |
 
-Run time is about 2–5s with parallel subtests under `-race`.
+`TestNewFails` (2 rows) pins the startup errors an operator sees: a wrong `BOT_TOKEN` makes `New` fail with `NewBotAPI: …`, wrapping the 401 `*tgbotapi.Error`, and a `STORAGE_PATH` that is a directory fails with `storage: load storage: …`.
+
+Run time is about 2s with parallel subtests under `-race`; row 9 is the longest (about 0.5s).
 
 ## 9. CI and tooling
 
@@ -876,7 +879,17 @@ Run time is about 2–5s with parallel subtests under `-race`.
 +    - integration
 
  linters:
-   # enable: and settings: unchanged
+   # enable: unchanged
+   settings:
+     revive:
++      enable-default-rules: true # without it revive runs only the rules listed below
+       rules:
++        - name: unexported-return # CLAUDE.md: New() returns *privateStruct
++          disabled: true
+         - name: exported
+           disabled: true
+         - name: package-comments
+           disabled: true
 +  exclusions:
 +    rules:
 +      - path: _test\.go
@@ -891,6 +904,8 @@ Run time is about 2–5s with parallel subtests under `-race`.
 -    - path: "_test\\.go"
 -      linters: [errcheck]
 ```
+
+The revive lines came in a separate commit after step 2: with only disabled entries in its rules list, revive ran no rules at all.
 
 `Makefile` (`build`, `test`, `lint` and `tidy` are unchanged):
 
@@ -913,15 +928,17 @@ Each step is one commit and ends green: `go build ./...`, `go test ./... -race -
 | # | Commit | Content | Extra gate |
 |---|---|---|---|
 | 1 | CI and lint hygiene | The `.golangci.yml` v2 exclusions, Makefile `generate`, and the CI mocks-up-to-date step. No Go changes. | `golangci-lint config verify` passes |
-| 2 | Composition root and seams on the old code | (a) `leetcode.NewHTTPClient(endpoint, c)`, with `""` meaning `graphqlURL`. This updates its one production caller (in main today; it moves into `app.New` in (d)) and the 3 test call sites in `http_test.go`, and `TestNewHTTPClient` gains the explicit-endpoint row. (b) The old `cronScheduler` gains `Start` (the constructor still starts it; `cron.Start` is idempotent), `Stop`, `RunNow` and `Next`. (c) The old bot gains `Handle(_ context.Context, u tgbotapi.Update) { b.handleMessage(u) }`; `Run` is deleted, `GetUpdatesChan` is dropped from `telegramSender`, and `go generate`. (d) `internal/app`: `Config`, `New(_ context.Context, cfg)` with the 75s client and today's wiring (bot.New, NewCronScheduler, SetScheduler, restore loop), and `Run(ctx)` in its final form except `defer a.cancelJobs()`. (e) `main.go` shrinks to about 25 lines. | No user-visible change except D3(d) and D3(e) |
-| 3 | Characterization suite | `internal/app/*_test.go` with fakes, harness and rows 1–16; `run.build-tags`; Makefile `test-integration`; the CI Integration job. The storage golden fixture is produced by the old `jsonStorage` and loaded by the old `json_test.go`. | The suite passes **against the old implementation** |
+| 2 | Composition root and seams on the old code | (a) `leetcode.NewHTTPClient(endpoint, c)`, with `""` meaning `graphqlURL`. This updates its one production caller (in main today; it moves into `app.New` in (d)) and the 3 test call sites in `http_test.go`, and `TestNewHTTPClient` gains the explicit-endpoint row. (b) The old `cronScheduler` gains `Start` (the constructor still starts it; `cron.Start` is idempotent), `Stop`, `RunNow` and `Next`. (c) The old bot gains `Handle(_ context.Context, u tgbotapi.Update) { b.handleMessage(u) }`; `Run` is deleted, `GetUpdatesChan` is dropped from `telegramSender`, and `go generate`. (d) `internal/app`: `Config`, `New(_ context.Context, cfg)` with the 75s client and today's wiring (bot.New, NewCronScheduler, SetScheduler, restore loop), and `Run(ctx)` in its final form except `defer a.cancelJobs()`. (e) `main.go` shrinks to 29 lines, with the second-signal handler (4.1). | No user-visible change except D3(d) and D3(e) |
+| 3 | Characterization suite | `internal/app/*_test.go` with fakes, harness, rows 1–16, the review-focus rows 20–21 and `TestNewFails`; `run.build-tags`; Makefile `test-integration`; the CI Integration job. The storage golden fixture is produced by the old `jsonStorage` and loaded by the old `json_test.go`. | The suite passes **against the old implementation** |
 | 4 | `internal/domain` | Model with the legacy tags, rules, errors and pure tests. Nothing imports it yet. | – |
 | 5 | `internal/notifier` | `deps.go` + `go generate`, `service.go`, `delivery.go` and unit tests. Not wired yet. | – |
-| 6 | `internal/telegram` | `deps.go`, `sender.go`, `handler.go`, `dialog.go`, `view.go`, mocks and unit tests. `view_test.go` copies `leetcode/format_test.go` byte for byte. Not wired yet. | – |
+| 6 | `internal/telegram` | `deps.go`, `sender.go`, `handler.go`, `dialog.go`, `view.go`, mocks and unit tests. `view_test.go` copies `leetcode/format_test.go` byte for byte (later compacted to the raw-date fallback rows, 4.5). Not wired yet. | – |
 | 7 | Switch (one mechanical commit) | (a) storage: delete `storage.go`; `json.go` moves to `domain.Chat` with ctx, `Upsert`, `Update` over `mutate`, `Get`/`All` with error, and `All` sorted; adapt `json_test.go` and add the rollback check. (b) leetcode: delete `client.go` and the `Format*` functions; ctx and value returns; adapt `http_test.go`; delete `client_test.go` and `format_test.go`. (c) scheduler: rewrite `cron.go` and delete `scheduler.go`; add `cron_test.go`. (d) app: the new wiring in `New` (jobs root, `Restore(ctx)`) and `defer a.cancelJobs()` in `Run`. (e) Delete `internal/bot` (10 production files, 9 test files, `mocks/`). (f) `go generate ./...` and `go mod tidy` (no new modules). | `git diff HEAD~1 -- 'internal/app/*_test.go'` is **empty** and the suite passes |
 | 8 | Deliberate-fix rows and docs | Integration rows 17–19. README (Development, Go version). The CLAUDE.md Test Style example, which still shows the deleted `New(tt.senderMock(ctrl), "TestBot", …)`. The project-memory architecture notes, outside the repo. | – |
 
-Deploy notes. `config.json` is read as is and stays readable by the old binary, so rollback is safe (5.2). Callback data strings are unchanged, so ✅ Done buttons on earlier messages keep working. Dialog sessions in progress at deploy time are lost, as on any restart today.
+After step 8, review follow-ups (one commit per package, same gates) compacted the tests and tightened the code (`fetchOne` with a fixed payload, `tzLabel` for negative half-hour zones, `handle` inlined into `Run`); the last one added row 22 with the harness's `lifecycle` wrapper. Section 14 is measured after them.
+
+Deploy notes. `config.json` is read as is and stays readable by the old binary, so rollback is safe (5.2). Callback data strings are unchanged, so ✅ Done buttons on earlier messages keep working. Dialog sessions in progress at deploy time are lost, as on any restart today (row 20).
 
 ## 11. Behaviour changes and what stays identical
 
@@ -938,7 +955,7 @@ Deploy notes. `config.json` is read as is and stays readable by the old binary, 
 | g | Key order inside `daily_pick` in `config.json` | `date, daily_difficulty, …` | no (5.2) |
 | h | An update or job that exceeds its 2-minute ctx budget is cut off at the next port call. This is the direct consequence of D2's per-update and per-job timeouts, not a separate decision. | no overall budget (only LeetCode's 10s per request) | only under a combined LeetCode and Telegram outage |
 
-**Invisible internals.** Under contention compare-and-set may make one extra `FetchRandom`. `Unsubscribe` now removes the cron entry before deleting the chat. `Restore` runs in `ChatID` order. Some log lines have new texts; log output is not a contract.
+**Invisible internals.** Under contention compare-and-set may make one extra `FetchRandom`. `Unsubscribe` now removes the cron entry before deleting the chat. `Restore` runs in `ChatID` order. Some log lines have new texts; log output is not a contract. Every Upsert and Update normalises `chat_id` to the map key. If LeetCode ever returned a daily with an empty difficulty, a random pick made for it would be labelled as the daily (the old text said "Today's daily is , so…"); LeetCode always returns one.
 
 **Byte-identical:** every message text; every keyboard label and callback data; `parse_mode=HTML` on every send and text edit; answer-before-edit order; which failures produce the fetch-failed notice; 403 handling on problem sends only; `config.json` content apart from (g); `BOT_TOKEN`, `STORAGE_PATH` and the default `config.json`; the `BOT_TOKEN environment variable is not set`, `storage: …`, `NewBotAPI: …` and `Authorized as @…` log lines; the Dockerfile and `go run main.go`.
 
@@ -957,34 +974,37 @@ Deploy notes. `config.json` is read as is and stays readable by the old binary, 
 | Integration timing. | 5s waits; the quiet-minute guard; single-level sets on random paths; the barrier `sync()`. |
 | `os.WriteFile` without rename can truncate `config.json` on a crash mid-write, as today. | The price of bind-mount compatibility. The README already disclaims durability. |
 | The integration tests are white-box, so renaming an app field breaks them. | This fails at compile time, never silently. |
+| Lines pinned only by review: the 75s Telegram client timeout (d), the 2-minute update budget (h) and the mutex in `Schedule`. | Constants and one obvious lock; a test would restate them. `Start`, `Stop` and the jobs-root detachment are pinned by the `lifecycle` wrapper and row 22. |
 
 ## 13. Follow-ups (out of scope; each a separate PR after the refactor)
 
-1. **Fail fast on a corrupt `config.json`.** Today an unmarshal error is logged, the store starts empty, and the next save overwrites the file, which loses every subscription. Return the error from `NewJSONStorage` instead.
+1. **Fail fast on a corrupt `config.json`.** Today an unmarshal error is logged, the store starts empty, and the next save overwrites the file, which loses every subscription. Return the error from `NewJSONStorage` instead. A valid `{"chats": null}` has the same root: it loads as a nil map, and every later write that adds a chat (the Upsert of a `/setup` save) panics, recovered by `Handle`; Update finds nothing and Delete is a no-op.
 2. **HTML-escape member names and problem titles** in HTML-mode messages (`formatRating`, `formatPick`). A name like `<b` currently breaks the message.
 3. **Per-chat parallel update handling**: parallel across chats, ordered within a chat, so one slow LeetCode fetch stops stalling every chat. The suite's `sync()` barrier must become per chat.
 4. **Docker stop grace ≥ 70s**: `stop_grace_period: 70s` in Compose, or `docker run --stop-timeout 70`, wherever the deployment is defined (this repo holds only the Dockerfile). This makes shutdown fully graceful across the 60s long poll in the normal case, with no LeetCode or Telegram outage.
 
 Also manual: in GitHub branch protection on `main`, make the **Integration** check required. This is a repository setting the owner changes; it is not part of any PR.
 
-## 14. Estimated size
+## 14. Size
 
-Before is measured with `wc -l` at `8879c84`; after is estimated. Generated mocks are excluded from the production and unit columns.
+Both columns are measured with `wc -l`: before at `8879c84`, after on `refactor/architecture` with the code as of `8b163f3`. Production excludes `*_test.go` and `mocks/`; generated mocks are excluded from the production and unit columns.
 
 | Package | Prod before | Prod after | Unit tests before | Unit tests after | Mocks before → after |
 |---|---|---|---|---|---|
-| `main.go` | 48 | ~25 | 0 | 0 | – |
-| `internal/app` | – | ~90 | – | 0 (integration ~1075) | – |
+| `main.go` | 48 | 29 | 0 | 0 | – |
+| `internal/app` | – | 102 | – | 0 (integration 1772) | – |
 | `internal/bot` | 1096 | deleted | 3541 | deleted | 273 → – |
-| `internal/domain` | – | ~110 | – | ~180 | – |
-| `internal/notifier` | – | ~215 (deps 30, service 115, delivery 70) | – | ~580 | – → ~210 |
-| `internal/telegram` | – | ~500 (deps 30, sender 70, handler 125, dialog 125, view 150) | – | ~460 | – → ~135 |
-| `internal/leetcode` | 283 | ~230 | 682 | ~480 | 54 → 54 |
-| `internal/storage` | 153 | ~120 | 373 | ~360 | – |
-| `internal/scheduler` | 68 | ~85 | 0 | ~110 | – |
-| **Total** | **1648** | **~1375 (−17%)** | **4596** | **~2170 (−53%)** | **327 → ~400** |
+| `internal/domain` | – | 108 | – | 228 | – |
+| `internal/notifier` | – | 223 (deps 32, service 112, delivery 79) | – | 653 | – → 272 |
+| `internal/telegram` | – | 724 (deps 30, sender 97, handler 178, dialog 189, view 230) | – | 700 | – → 194 |
+| `internal/leetcode` | 283 | 208 | 682 | 398 | 54 → 54 |
+| `internal/storage` | 153 | 146 | 373 | 589 | – |
+| `internal/scheduler` | 68 | 95 | 0 | 198 | – |
+| **Total** | **1648** | **1635 (−0.8%)** | **4596** | **2766 (−40%)** | **327 → 520** |
 
-Threading ctx costs about +60 production lines compared with the ctx-free variant (~1315). Integration: fake Telegram ~220, fake LeetCode ~110, harness ~220, scenarios ~525.
+Integration: scenarios 742, harness 369, fake Telegram 458, fake LeetCode 203.
+
+Production missed the ~1375 estimate. `view.go` keeps about 125 lines of byte-frozen texts, callback data and keyboards; ctx threading, the per-method ctx refusal in storage and the explicit ports cost about as much as the deleted duplication saved. Without blank and comment lines the new production code is 1304 lines, already below the old 1345.
 
 Where the old code goes:
 - `bot.go`, `router.go` and `commands.go` become `handler.go`; `setup.go`, `difficulty.go` and `state.go` become `dialog.go`; `const.go`, `keyboard.go` and leetcode's `Format*` become `view.go`.
