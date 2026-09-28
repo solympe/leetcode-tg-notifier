@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"maps"
@@ -15,16 +16,14 @@ import (
 	"github.com/solympe/leetcode-tg-notifier/internal/domain"
 )
 
-// jsonFile is the on-disk format, {"chats":{"<id>":Chat}}. The domain JSON
-// tags are the file's contract: renaming one needs a migration.
+// jsonFile is the on-disk format, {"chats":{"<id>":Chat}}.
 type jsonFile struct {
 	Chats map[string]domain.Chat `json:"chats"`
 }
 
 // jsonStorage keeps every chat in memory and rewrites the whole file on each
-// change. One mutex guards both, so every method is atomic. A method whose
-// ctx is already done returns ctx.Err() before taking the lock; a started
-// write always completes, because file I/O cannot be cancelled.
+// change under one mutex. A done ctx is refused before locking; a started
+// write always completes.
 type jsonStorage struct {
 	mu   sync.Mutex
 	path string
@@ -32,29 +31,19 @@ type jsonStorage struct {
 }
 
 func NewJSONStorage(path string) (*jsonStorage, error) {
-	s := &jsonStorage{
-		path: path,
-		data: jsonFile{Chats: make(map[string]domain.Chat)},
+	s := &jsonStorage{path: path, data: jsonFile{Chats: make(map[string]domain.Chat)}}
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return s, nil
 	}
-	if err := s.load(); err != nil {
-		return nil, err
-	}
-	return s, nil
-}
-
-func (s *jsonStorage) load() error {
-	data, err := os.ReadFile(s.path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("load storage: %w", err)
+		return nil, fmt.Errorf("load storage: %w", err)
 	}
-	if err := json.Unmarshal(data, &s.data); err != nil {
+	if err := json.Unmarshal(raw, &s.data); err != nil {
 		log.Printf("storage: unmarshal error, starting fresh: %v", err)
 		s.data = jsonFile{Chats: make(map[string]domain.Chat)}
 	}
-	return nil
+	return s, nil
 }
 
 // save writes the file in place, not through a temp file and rename, which
@@ -97,33 +86,22 @@ func (s *jsonStorage) Get(ctx context.Context, chatID int64) (domain.Chat, bool,
 	return clone(c), ok, nil
 }
 
-// Upsert applies fn to the chat, or to a new Chat{ChatID: chatID} when it is
-// missing, and saves the result.
+// Upsert applies fn to the chat, or to a new Chat{ChatID: chatID}, and saves.
 func (s *jsonStorage) Upsert(ctx context.Context, chatID int64, fn func(*domain.Chat)) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	_, err := s.mutate(chatID, true, func(c *domain.Chat) bool {
-		fn(c)
-		return true
-	})
+	_, err := s.mutate(ctx, chatID, true, func(c *domain.Chat) bool { fn(c); return true })
 	return err
 }
 
-// Update applies fn to the chat and saves the result when fn returns true. It
-// reports whether the chat exists; a missing chat is neither passed to fn nor
-// created, so a removed chat is never brought back.
+// Update applies fn to an existing chat and saves when fn returns true. A
+// missing chat is neither passed to fn nor created.
 func (s *jsonStorage) Update(ctx context.Context, chatID int64, fn func(*domain.Chat) bool) (bool, error) {
+	return s.mutate(ctx, chatID, false, fn)
+}
+
+func (s *jsonStorage) mutate(ctx context.Context, chatID int64, create bool, fn func(*domain.Chat) bool) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	return s.mutate(chatID, false, fn)
-}
-
-// mutate runs fn on a clone of the chat under the lock. When fn returns true
-// it forces ChatID to the key, stores a clone in memory, then saves the file.
-// A missing chat is created only when create is set.
-func (s *jsonStorage) mutate(chatID int64, create bool, fn func(*domain.Chat) bool) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c, ok := s.data.Chats[key(chatID)]
