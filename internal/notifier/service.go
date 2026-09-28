@@ -44,8 +44,7 @@ func (s *service) Restore(ctx context.Context) error {
 }
 
 // Subscribe saves chatID's time, zone and difficulties, keeping its members
-// and pick of the day, and (re)schedules its daily job even if the save
-// failed.
+// and pick, and (re)schedules its job even if the save failed.
 func (s *service) Subscribe(ctx context.Context, chatID int64, notifyTime, timezone string, difficulties []string) error {
 	saveErr := s.store.Upsert(ctx, chatID, func(c *domain.Chat) {
 		c.NotifyTime = notifyTime
@@ -63,36 +62,27 @@ func (s *service) SetDifficulties(ctx context.Context, chatID int64, difficultie
 		c.Difficulties = difficulties
 		return true
 	})
-	if err != nil {
-		return err
-	}
-	if !found {
+	if err == nil && !found {
 		return domain.ErrNotSubscribed
 	}
-	return nil
+	return err
 }
 
-// Unsubscribe removes chatID's daily job, then its stored chat.
 func (s *service) Unsubscribe(ctx context.Context, chatID int64) error {
 	s.sched.Remove(chatID)
 	return s.store.Delete(ctx, chatID)
 }
 
-// Subscription returns chatID's stored chat; false means it is not subscribed.
 func (s *service) Subscription(ctx context.Context, chatID int64) (domain.Chat, bool, error) {
 	return s.store.Get(ctx, chatID)
 }
 
-// Solve counts userID's solve for today (UTC) in one atomic update and
-// returns the member's total. On a storage error the total is at least 1 when
-// the count was applied before a failed write, and 0 when the call was
-// refused.
+// Solve counts userID's solve for today (UTC) and returns the member's total.
+// On a storage error the total is 0 only when the call was refused.
 func (s *service) Solve(ctx context.Context, chatID, userID int64, name string) (int, error) {
 	day := s.now().UTC().Format(time.DateOnly)
-	var (
-		total   int
-		counted bool
-	)
+	var total int
+	var counted bool
 	found, err := s.store.Update(ctx, chatID, func(c *domain.Chat) bool {
 		total, counted = c.RecordSolve(userID, name, day)
 		return counted
@@ -108,19 +98,15 @@ func (s *service) Solve(ctx context.Context, chatID, userID int64, name string) 
 	return total, nil
 }
 
-// SendToday sends chatID today's problem: the cron job, /today and the 📅 button.
+// SendToday sends chatID today's problem; it is also the scheduled job.
 func (s *service) SendToday(ctx context.Context, chatID int64) {
 	p, err := s.today(ctx, chatID)
 	s.deliver(ctx, chatID, p, err)
 }
 
-// SendDaily sends chatID the official daily whatever its difficulties: /daily
-// and the 🗓 button. It never reads or writes the store, so it also works for
-// an unsubscribed chat.
+// SendDaily sends the official daily whatever chatID's difficulties. It never
+// touches the store, so it also works for an unsubscribed chat.
 func (s *service) SendDaily(ctx context.Context, chatID int64) {
 	daily, err := s.lc.FetchDaily(ctx)
-	if err != nil {
-		err = fmt.Errorf("FetchDaily: %w", err)
-	}
 	s.deliver(ctx, chatID, domain.Pick{Problem: daily}, err)
 }

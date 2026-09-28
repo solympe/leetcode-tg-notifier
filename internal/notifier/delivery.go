@@ -19,12 +19,9 @@ func (s *service) job(chatID int64) func() {
 	}
 }
 
-// today returns what chatID gets today: the daily when the chat is not
-// subscribed or takes its difficulty, otherwise a random problem of a
-// subscribed difficulty, picked once per daily date. The pick is saved by
-// compare-and-set: the first committed pick wins and every concurrent loser
-// sends it, so all sends to a chat agree. An error means there is nothing to
-// send.
+// today returns the daily, or a random problem of a subscribed difficulty
+// picked once per daily date. The pick is saved by compare-and-set, so
+// concurrent sends to a chat all send the first committed one.
 func (s *service) today(ctx context.Context, chatID int64) (domain.Pick, error) {
 	daily, err := s.lc.FetchDaily(ctx)
 	if err != nil {
@@ -52,8 +49,7 @@ func (s *service) today(ctx context.Context, chatID int64) (domain.Pick, error) 
 			pick = won
 			return false
 		}
-		saved := pick
-		cur.DailyPick = &saved
+		cur.DailyPick = &pick
 		return true
 	}); err != nil {
 		log.Printf("save pick for %d: %v", chatID, err) // the pick is still sent
@@ -74,15 +70,10 @@ func (s *service) deliver(ctx context.Context, chatID int64, p domain.Pick, err 
 	if err := s.out.SendProblem(ctx, chatID, p); err != nil {
 		log.Printf("send problem to %d: %v", chatID, err)
 		if errors.Is(err, domain.ErrBlocked) {
-			s.dropBlocked(ctx, chatID)
+			log.Printf("bot blocked by %d: removing subscription", chatID)
+			if err := s.Unsubscribe(ctx, chatID); err != nil {
+				log.Printf("unsubscribe %d: %v", chatID, err)
+			}
 		}
-	}
-}
-
-// dropBlocked removes the subscription of a chat that blocked the bot.
-func (s *service) dropBlocked(ctx context.Context, chatID int64) {
-	log.Printf("bot blocked by %d: removing subscription", chatID)
-	if err := s.Unsubscribe(ctx, chatID); err != nil {
-		log.Printf("unsubscribe %d: %v", chatID, err)
 	}
 }
