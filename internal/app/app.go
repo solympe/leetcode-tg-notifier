@@ -10,10 +10,11 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
-	"github.com/solympe/leetcode-tg-notifier/internal/bot"
 	"github.com/solympe/leetcode-tg-notifier/internal/leetcode"
+	"github.com/solympe/leetcode-tg-notifier/internal/notifier"
 	"github.com/solympe/leetcode-tg-notifier/internal/scheduler"
 	"github.com/solympe/leetcode-tg-notifier/internal/storage"
+	"github.com/solympe/leetcode-tg-notifier/internal/telegram"
 )
 
 // Config is everything the process needs from its environment. The endpoints
@@ -43,14 +44,17 @@ type updateHandler interface { // a.bot
 }
 
 type application struct {
-	api   *tgbotapi.BotAPI // concrete third-party type: GetUpdatesChan, StopReceivingUpdates, GetUpdates
-	sched jobRunner
-	bot   updateHandler
+	api        *tgbotapi.BotAPI // concrete third-party type: GetUpdatesChan, StopReceivingUpdates, GetUpdates
+	sched      jobRunner
+	bot        updateHandler
+	cancelJobs context.CancelFunc // cancels the jobs root: the parent of every scheduled job's ctx
 }
 
 // New builds the object graph and restores every stored schedule. It calls
-// getMe, so it fails on a bad token or an unreachable Telegram endpoint.
-func New(_ context.Context, cfg Config) (*application, error) {
+// getMe, so it fails on a bad token or an unreachable Telegram endpoint. ctx
+// bounds the restore; the jobs root is detached from it and cancelled when
+// Run returns.
+func New(ctx context.Context, cfg Config) (*application, error) {
 	store, err := storage.NewJSONStorage(cmp.Or(cfg.StoragePath, "config.json"))
 	if err != nil {
 		return nil, fmt.Errorf("storage: %w", err)
@@ -62,21 +66,26 @@ func New(_ context.Context, cfg Config) (*application, error) {
 	}
 	log.Printf("Authorized as @%s", api.Self.UserName)
 
-	b := bot.New(api, api.Self.UserName, store, leetcode.NewHTTPClient(cfg.LeetCodeEndpoint, nil), nil)
-	sched := scheduler.NewCronScheduler(b.SendDailyProblem)
-	b.SetScheduler(sched)
-	for _, c := range store.All() {
-		if err := sched.Schedule(c.ChatID, c); err != nil {
-			log.Printf("restore schedule for %d: %v", c.ChatID, err)
-		}
+	jobs, cancelJobs := context.WithCancel(context.WithoutCancel(ctx))
+	sched := scheduler.New()
+	svc := notifier.New(jobs, store, leetcode.NewHTTPClient(cfg.LeetCodeEndpoint, nil), sched, telegram.NewSender(api), time.Now)
+	if err := svc.Restore(ctx); err != nil {
+		log.Print(err) // never fatal, as before
 	}
-	return &application{api: api, sched: sched, bot: b}, nil
+	return &application{
+		api:        api,
+		sched:      sched,
+		bot:        telegram.NewHandler(api, svc, api.Self.UserName),
+		cancelJobs: cancelJobs,
+	}, nil
 }
 
 // Run handles updates one at a time until ctx is done, then shuts down
 // gracefully: it drains every update already received, confirms the last
-// batch and waits for running jobs. Call it once per application.
+// batch, waits for running jobs and cancels the jobs root. Call it once per
+// application.
 func (a *application) Run(ctx context.Context) {
+	defer a.cancelJobs() // 5. backstop: no job context outlives Run
 	a.sched.Start()
 	defer a.sched.Stop() // 4. no new firings; waits for running jobs
 	updates := a.api.GetUpdatesChan(tgbotapi.UpdateConfig{Timeout: pollTimeout})

@@ -1,7 +1,9 @@
 package leetcode
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,11 +11,13 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"go.uber.org/mock/gomock"
 
+	"github.com/solympe/leetcode-tg-notifier/internal/domain"
 	"github.com/solympe/leetcode-tg-notifier/internal/leetcode/mocks"
 )
 
@@ -123,6 +127,7 @@ func listJSON(total int, questions ...string) string {
 }
 
 func TestFetchRandom(t *testing.T) {
+	ctx := t.Context()
 	twoSum := question("1", "Two Sum", "two-sum", "Easy", false, "Array", "Hash Table")
 	paidEasy := question("252", "Meeting Rooms", "meeting-rooms", "Easy", true, "Array")
 	paidMedium := question("253", "Meeting Rooms II", "meeting-rooms-ii", "Medium", true, "Heap (Priority Queue)")
@@ -130,14 +135,14 @@ func TestFetchRandom(t *testing.T) {
 	rainWater := question("42", "Trapping Rain Water", "trapping-rain-water", "Hard", false, "Array", "Two Pointers")
 	regex := question("10", "Regular Expression Matching", "regular-expression-matching", "Hard", false, "String")
 
-	twoSumProblem := &Problem{
+	twoSumProblem := domain.Problem{
 		ID:         "1",
 		Title:      "Two Sum",
 		Link:       "/problems/two-sum/",
 		Difficulty: "Easy",
 		Tags:       []string{"Array", "Hash Table"},
 	}
-	addTwoProblem := &Problem{
+	addTwoProblem := domain.Problem{
 		ID:         "2",
 		Title:      "Add Two Numbers",
 		Link:       "/problems/add-two-numbers/",
@@ -171,12 +176,12 @@ func TestFetchRandom(t *testing.T) {
 		randMock     func(*gomock.Controller) *mocks.MockrandSource
 		wantFilter   string
 		calls        []listCall
-		want         *Problem
+		want         domain.Problem
 		wantErr      string
 	}{
 		{
 			name:         "free problem on the first draw",
-			difficulties: []string{DifficultyHard},
+			difficulties: []string{domain.Hard},
 			randMock: func(ctrl *gomock.Controller) *mocks.MockrandSource {
 				m := mocks.NewMockrandSource(ctrl)
 				gomock.InOrder(
@@ -190,7 +195,7 @@ func TestFetchRandom(t *testing.T) {
 				{limit: 1, skip: 0, body: listJSON(907, rainWater)},
 				{limit: 1, skip: 100, body: listJSON(907, regex)},
 			},
-			want: &Problem{
+			want: domain.Problem{
 				ID:         "10",
 				Title:      "Regular Expression Matching",
 				Link:       "/problems/regular-expression-matching/",
@@ -200,7 +205,7 @@ func TestFetchRandom(t *testing.T) {
 		},
 		{
 			name:         "paid draw is rejected and drawn again",
-			difficulties: []string{DifficultyMedium},
+			difficulties: []string{domain.Medium},
 			randMock: func(ctrl *gomock.Controller) *mocks.MockrandSource {
 				m := mocks.NewMockrandSource(ctrl)
 				gomock.InOrder(
@@ -221,7 +226,7 @@ func TestFetchRandom(t *testing.T) {
 		{
 			// The list shrank between the count and the draw.
 			name:         "empty draw is drawn again",
-			difficulties: []string{DifficultyEasy},
+			difficulties: []string{domain.Easy},
 			randMock: func(ctrl *gomock.Controller) *mocks.MockrandSource {
 				m := mocks.NewMockrandSource(ctrl)
 				gomock.InOrder(
@@ -241,7 +246,7 @@ func TestFetchRandom(t *testing.T) {
 		},
 		{
 			name:         "subset picks the level chosen by the random source",
-			difficulties: []string{DifficultyEasy, DifficultyHard},
+			difficulties: []string{domain.Easy, domain.Hard},
 			randMock: func(ctrl *gomock.Controller) *mocks.MockrandSource {
 				m := mocks.NewMockrandSource(ctrl)
 				gomock.InOrder(
@@ -255,7 +260,7 @@ func TestFetchRandom(t *testing.T) {
 				{limit: 1, skip: 0, body: listJSON(907, regex)},
 				{limit: 1, skip: 900, body: listJSON(907, rainWater)},
 			},
-			want: &Problem{
+			want: domain.Problem{
 				ID:         "42",
 				Title:      "Trapping Rain Water",
 				Link:       "/problems/trapping-rain-water/",
@@ -283,7 +288,7 @@ func TestFetchRandom(t *testing.T) {
 		},
 		{
 			name:         "every draw is paid",
-			difficulties: []string{DifficultyEasy},
+			difficulties: []string{domain.Easy},
 			randMock:     failedDrawsRand,
 			wantFilter:   "EASY",
 			calls:        failedDraws(listJSON(806, paidEasy)),
@@ -291,7 +296,7 @@ func TestFetchRandom(t *testing.T) {
 		},
 		{
 			name:         "every draw is empty",
-			difficulties: []string{DifficultyEasy},
+			difficulties: []string{domain.Easy},
 			randMock:     failedDrawsRand,
 			wantFilter:   "EASY",
 			calls:        failedDraws(listJSON(806)),
@@ -299,7 +304,7 @@ func TestFetchRandom(t *testing.T) {
 		},
 		{
 			name:         "total zero",
-			difficulties: []string{DifficultyEasy},
+			difficulties: []string{domain.Easy},
 			randMock: func(ctrl *gomock.Controller) *mocks.MockrandSource {
 				m := mocks.NewMockrandSource(ctrl)
 				m.EXPECT().IntN(gomock.Eq(1)).Return(0)
@@ -311,7 +316,7 @@ func TestFetchRandom(t *testing.T) {
 		},
 		{
 			name:         "non-200 status on count request",
-			difficulties: []string{DifficultyEasy},
+			difficulties: []string{domain.Easy},
 			randMock: func(ctrl *gomock.Controller) *mocks.MockrandSource {
 				m := mocks.NewMockrandSource(ctrl)
 				m.EXPECT().IntN(gomock.Eq(1)).Return(0)
@@ -323,7 +328,7 @@ func TestFetchRandom(t *testing.T) {
 		},
 		{
 			name:         "non-200 status on a draw",
-			difficulties: []string{DifficultyEasy},
+			difficulties: []string{domain.Easy},
 			randMock: func(ctrl *gomock.Controller) *mocks.MockrandSource {
 				m := mocks.NewMockrandSource(ctrl)
 				gomock.InOrder(
@@ -341,7 +346,7 @@ func TestFetchRandom(t *testing.T) {
 		},
 		{
 			name:         "malformed JSON on count request",
-			difficulties: []string{DifficultyEasy},
+			difficulties: []string{domain.Easy},
 			randMock: func(ctrl *gomock.Controller) *mocks.MockrandSource {
 				m := mocks.NewMockrandSource(ctrl)
 				m.EXPECT().IntN(gomock.Eq(1)).Return(0)
@@ -353,7 +358,7 @@ func TestFetchRandom(t *testing.T) {
 		},
 		{
 			name:         "malformed JSON on a draw",
-			difficulties: []string{DifficultyEasy},
+			difficulties: []string{domain.Easy},
 			randMock: func(ctrl *gomock.Controller) *mocks.MockrandSource {
 				m := mocks.NewMockrandSource(ctrl)
 				gomock.InOrder(
@@ -371,7 +376,7 @@ func TestFetchRandom(t *testing.T) {
 		},
 		{
 			name:         "invalid difficulty makes no HTTP call",
-			difficulties: []string{DifficultyEasy, "Extreme"},
+			difficulties: []string{domain.Easy, "Extreme"},
 			randMock:     mocks.NewMockrandSource,
 			wantErr:      `unknown difficulty "Extreme"`,
 		},
@@ -384,13 +389,13 @@ func TestFetchRandom(t *testing.T) {
 			hc := NewHTTPClient(srv.URL, srv.Client())
 			hc.rnd = tt.randMock(ctrl)
 
-			got, err := hc.FetchRandom(tt.difficulties)
+			got, err := hc.FetchRandom(ctx, tt.difficulties)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("error: got %v, want containing %q", err, tt.wantErr)
 				}
-				if got != nil {
-					t.Errorf("problem: got %+v, want nil", got)
+				if !reflect.DeepEqual(got, domain.Problem{}) {
+					t.Errorf("problem: got %+v, want the zero value", got)
 				}
 				return
 			}
@@ -440,6 +445,7 @@ func TestNewHTTPClient(t *testing.T) {
 }
 
 func TestFetchDaily(t *testing.T) {
+	ctx := t.Context()
 	const dailyJSON = `{"data":{"activeDailyCodingChallengeQuestion":{"date":"2026-09-27","link":"/problems/two-sum/",` +
 		`"question":{"title":"Two Sum","frontendQuestionId":"1","difficulty":"Easy",` +
 		`"topicTags":[{"name":"Array"},{"name":"Hash Table"}]}}}}`
@@ -448,14 +454,14 @@ func TestFetchDaily(t *testing.T) {
 		name    string
 		status  int
 		body    string
-		want    *Problem
+		want    domain.Problem
 		wantErr string
 	}{
 		{
 			name:   "happy path",
 			status: http.StatusOK,
 			body:   dailyJSON,
-			want: &Problem{
+			want: domain.Problem{
 				Date:       "2026-09-27",
 				Link:       "/problems/two-sum/",
 				ID:         "1",
@@ -475,6 +481,12 @@ func TestFetchDaily(t *testing.T) {
 			status:  http.StatusOK,
 			body:    `{"data":{"activeDailyCodingChallengeQuestion":null}}`,
 			wantErr: "empty response",
+		},
+		{
+			name:    "malformed JSON",
+			status:  http.StatusOK,
+			body:    `{"data":`,
+			wantErr: "decode",
 		},
 	}
 
@@ -513,10 +525,13 @@ func TestFetchDaily(t *testing.T) {
 
 			hc := NewHTTPClient(srv.URL, srv.Client())
 
-			got, err := hc.FetchDaily()
+			got, err := hc.FetchDaily(ctx)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("error: got %v, want containing %q", err, tt.wantErr)
+				}
+				if !reflect.DeepEqual(got, domain.Problem{}) {
+					t.Errorf("problem: got %+v, want the zero value", got)
 				}
 				return
 			}
@@ -525,6 +540,109 @@ func TestFetchDaily(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("problem:\n got %+v\nwant %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestContext(t *testing.T) {
+	ctx := t.Context()
+	const deadline = 50 * time.Millisecond
+	cancelled := func(parent context.Context) (context.Context, context.CancelFunc) {
+		c, cancel := context.WithCancel(parent)
+		cancel()
+		return c, cancel
+	}
+	withDeadline := func(parent context.Context) (context.Context, context.CancelFunc) {
+		return context.WithTimeout(parent, deadline)
+	}
+	easyLevel := func(ctrl *gomock.Controller) *mocks.MockrandSource {
+		m := mocks.NewMockrandSource(ctrl)
+		m.EXPECT().IntN(gomock.Eq(1)).Return(0)
+		return m
+	}
+	fetchDaily := func(ctx context.Context, hc *httpClient) (domain.Problem, error) { return hc.FetchDaily(ctx) }
+	fetchRandom := func(ctx context.Context, hc *httpClient) (domain.Problem, error) {
+		return hc.FetchRandom(ctx, []string{domain.Easy})
+	}
+
+	tests := []struct {
+		name     string
+		ctx      func(parent context.Context) (context.Context, context.CancelFunc)
+		randMock func(*gomock.Controller) *mocks.MockrandSource
+		call     func(ctx context.Context, hc *httpClient) (domain.Problem, error)
+		wantErr  error
+		wantHits int32
+	}{
+		{
+			name:     "FetchDaily with a cancelled ctx sends nothing",
+			ctx:      cancelled,
+			randMock: mocks.NewMockrandSource,
+			call:     fetchDaily,
+			wantErr:  context.Canceled,
+			wantHits: 0,
+		},
+		{
+			name:     "FetchRandom with a cancelled ctx sends nothing",
+			ctx:      cancelled,
+			randMock: easyLevel,
+			call:     fetchRandom,
+			wantErr:  context.Canceled,
+			wantHits: 0,
+		},
+		{
+			name:     "FetchDaily gives up on a request in flight at the deadline",
+			ctx:      withDeadline,
+			randMock: mocks.NewMockrandSource,
+			call:     fetchDaily,
+			wantErr:  context.DeadlineExceeded,
+			wantHits: 1,
+		},
+		{
+			name:     "FetchRandom gives up on a request in flight at the deadline",
+			ctx:      withDeadline,
+			randMock: easyLevel,
+			call:     fetchRandom,
+			wantErr:  context.DeadlineExceeded,
+			wantHits: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			var hits atomic.Int32
+			release := make(chan struct{})
+			// The handler holds every request until the client gives up.
+			srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				hits.Add(1)
+				select {
+				case <-r.Context().Done():
+				case <-release:
+				}
+			}))
+			t.Cleanup(srv.Close)
+			t.Cleanup(func() { close(release) }) // runs first: never leave a handler blocked
+			hc := NewHTTPClient(srv.URL, srv.Client())
+			hc.rnd = tt.randMock(ctrl)
+			callCtx, cancel := tt.ctx(ctx)
+			defer cancel()
+
+			start := time.Now()
+			got, err := tt.call(callCtx, hc)
+			elapsed := time.Since(start)
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Errorf("error: got %v, want %v", err, tt.wantErr)
+			}
+			if !reflect.DeepEqual(got, domain.Problem{}) {
+				t.Errorf("problem: got %+v, want the zero value", got)
+			}
+			if elapsed > deadline+time.Second {
+				t.Errorf("returned after %v, want about %v", elapsed, deadline)
+			}
+			if n := hits.Load(); n != tt.wantHits {
+				t.Errorf("server hits: got %d, want %d", n, tt.wantHits)
 			}
 		})
 	}
