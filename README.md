@@ -30,7 +30,7 @@ A Telegram bot that sends you the LeetCode daily challenge at a time you choose,
 
 ### Requirements
 
-- Go 1.24+
+- Go 1.26+
 - A Telegram bot token from [@BotFather](https://t.me/BotFather)
 
 ### Run locally
@@ -54,7 +54,9 @@ Chat configs are persisted in `config.json` in the working directory.
 ## Development
 
 ```bash
-make test   # run tests
-make lint   # run linter
-make build  # build binary
+make test              # run tests
+make test-integration  # run tests plus the hermetic integration suite (in-process fake Telegram and LeetCode)
+make lint              # run linter
+make generate          # regenerate the gomock mocks (needs mockgen v0.6.0)
+make build             # build binary
 ```

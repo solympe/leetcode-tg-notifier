@@ -2,6 +2,8 @@ version: "2"
 
 run:
   timeout: 3m
+  build-tags:
+    - integration
 
 linters:
   enable:
@@ -12,11 +14,19 @@ linters:
     - misspell
   settings:
     revive:
+      enable-default-rules: true # without it revive runs only the rules listed below
       rules:
+        - name: unexported-return # CLAUDE.md: New() returns *privateStruct
+          disabled: true
         - name: exported
           disabled: true
         - name: package-comments
           disabled: true
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
 
 formatters:
   enable:
@@ -25,8 +35,3 @@ formatters:
     goimports:
       local-prefixes:
         - github.com/solympe/leetcode-tg-notifier
-
-issues:
-  exclude-rules:
-    - path: "_test\\.go"
-      linters: [errcheck]
