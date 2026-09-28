@@ -559,6 +559,51 @@ func TestIntegration(t *testing.T) {
 			},
 		},
 		{
+			// Deviation (a): today these callbacks are never answered.
+			name: "17 unknown callbacks are answered",
+			run: func(e *env) {
+				e.say(1700, alice, "/about")
+				m := e.sent(1700, aboutText, nil)
+				for _, data := range []string{"bogus", "/start", "done:x"} {
+					if got := e.expectAnswer(e.pressOn(1700, alice, m, data)); got != menuExpiredText {
+						e.t.Errorf("%q answered %q, want %q", data, got, menuExpiredText)
+					}
+				}
+				e.expectQuiet(1700)
+			},
+		},
+		{
+			// Deviation (b): today ties come in random map order.
+			name: "18 rating ties are ordered by name",
+			seed: `{"chats":{"-1800":{"chat_id":-1800,"notify_time":"20:00","timezone":"UTC","members":{` +
+				`"9":{"name":"Carol","count":2,"last_solved_date":"2026-09-27"},` +
+				`"7":{"name":"Alice","count":2,"last_solved_date":"2026-09-27"},` +
+				`"8":{"name":"Bob","count":3,"last_solved_date":"2026-09-27"}}}}}`,
+			run: func(e *env) {
+				e.say(-1800, alice, "/rating")
+				e.sent(-1800, "🏆 <b>Rating</b>\n\n🥇 Bob — 3\n🥈 Alice — 2\n🥉 Carol — 2\n", nil)
+			},
+		},
+		{
+			// A job run after Run returned gets a cancelled ctx: the daily
+			// request never leaves the client, and the fetch-failed notice is
+			// refused by the sender, so the strict invariants at cleanup see
+			// no Bot API call for the chat.
+			name: "19 jobs root is cancelled when Run returns",
+			seed: `{"chats":{"1900":{"chat_id":1900,"notify_time":"09:00","timezone":"UTC","members":null}}}`,
+			run: func(e *env) {
+				e.sync()
+				e.stop()
+				n := e.lc.dailyCalls()
+				if !e.fire(1900) {
+					e.t.Fatal("fire(1900) = false, want the restored entry")
+				}
+				if got := e.lc.dailyCalls(); got != n {
+					e.t.Errorf("dailyCalls after Run returned: got %d, want %d", got, n)
+				}
+			},
+		},
+		{
 			// Review focus: a deploy mid-dialog. The sessions die with the old
 			// process, so every dialog button on a prompt sent before the
 			// restart has expired and typed input is plain text again, while

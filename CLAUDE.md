@@ -60,29 +60,40 @@ go generate ./...
 Initialize mocks with their `EXPECT()` calls inside the factory, not in the loop body.
 
 ```go
-func TestFoo(t *testing.T) {
+func TestSendDaily(t *testing.T) {
+    ctx := t.Context() // once, before the table: the factories and the call share it
+    daily := domain.Problem{Date: "2026-09-28", ID: "4", Title: "Median of Two Sorted Arrays", Difficulty: domain.Hard}
+
     tests := []struct {
         name      string
         storeMock func(*gomock.Controller) *mocks.MockchatStore
-        lcMock    func(*gomock.Controller) *mocks.MocklcFetcher
-        wantErr   string
+        lcMock    func(*gomock.Controller) *mocks.MockproblemSource
+        schedMock func(*gomock.Controller) *mocks.MockdailyScheduler
+        outMock   func(*gomock.Controller) *mocks.Mockmessenger
     }{
         {
-            name: "happy path",
-            storeMock: func(ctrl *gomock.Controller) *mocks.MockchatStore {
-                m := mocks.NewMockchatStore(ctrl)
-                m.EXPECT().Get(int64(1)).Return(cfg, true)
+            name:      "sends the official daily",
+            storeMock: mocks.NewMockchatStore, // no expectations — pass constructor directly
+            lcMock: func(ctrl *gomock.Controller) *mocks.MockproblemSource {
+                m := mocks.NewMockproblemSource(ctrl)
+                m.EXPECT().FetchDaily(gomock.Eq(ctx)).Return(daily, nil)
                 return m
             },
-            lcMock: mocks.NewMocklcFetcher, // no expectations — pass constructor directly
+            schedMock: mocks.NewMockdailyScheduler,
+            outMock: func(ctrl *gomock.Controller) *mocks.Mockmessenger {
+                m := mocks.NewMockmessenger(ctrl)
+                // IDs are typed: gomock.Eq(100) never matches an int64
+                m.EXPECT().SendProblem(gomock.Eq(ctx), gomock.Eq(int64(100)), gomock.Eq(domain.Pick{Problem: daily})).Return(nil)
+                return m
+            },
         },
     }
 
     for _, tt := range tests {
         t.Run(tt.name, func(t *testing.T) {
             ctrl := gomock.NewController(t)
-            b := New(tt.senderMock(ctrl), "TestBot", tt.storeMock(ctrl), tt.lcMock(ctrl), tt.schedMock(ctrl))
-            // ...
+            s := New(ctx, tt.storeMock(ctrl), tt.lcMock(ctrl), tt.schedMock(ctrl), tt.outMock(ctrl), time.Now)
+            s.SendDaily(ctx, 100)
         })
     }
 }
