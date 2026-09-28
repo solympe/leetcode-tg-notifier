@@ -1,7 +1,4 @@
-// Package domain holds the persisted model, its pure rules and the sentinel
-// errors shared by the use cases and the adapters. It imports only the
-// standard library.
-//
+// Package domain holds the stdlib-only model, its rules and sentinel errors.
 // The JSON tags are the config.json contract: renaming one needs a migration.
 package domain
 

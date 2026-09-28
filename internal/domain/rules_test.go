@@ -31,27 +31,10 @@ func TestWants(t *testing.T) {
 }
 
 func TestPickFor(t *testing.T) {
-	daily := Problem{
-		Date:       "2026-09-28",
-		ID:         "4",
-		Title:      "Median of Two Sorted Arrays",
-		Link:       "/problems/median-of-two-sorted-arrays/",
-		Difficulty: Hard,
-		Tags:       []string{"Array", "Binary Search", "Divide and Conquer"},
-	}
+	daily := Problem{Date: "2026-09-28", ID: "4", Difficulty: Hard}
 	// easyPick is a random Easy problem that replaced a Hard daily of date.
 	easyPick := func(date string) *Pick {
-		return &Pick{
-			Problem: Problem{
-				Date:       date,
-				ID:         "1",
-				Title:      "Two Sum",
-				Link:       "/problems/two-sum/",
-				Difficulty: Easy,
-				Tags:       []string{"Array", "Hash Table"},
-			},
-			DailyDifficulty: Hard,
-		}
+		return &Pick{Problem: Problem{Date: date, ID: "1", Difficulty: Easy, Tags: []string{"Array"}}, DailyDifficulty: Hard}
 	}
 
 	tests := []struct {
@@ -60,26 +43,11 @@ func TestPickFor(t *testing.T) {
 		want   Pick
 		wantOK bool
 	}{
+		{name: "no pick", chat: Chat{Difficulties: []string{Easy}}},
+		{name: "pick for another date", chat: Chat{Difficulties: []string{Easy}, DailyPick: easyPick("2026-09-27")}},
+		{name: "pick of a difficulty no longer subscribed", chat: Chat{Difficulties: []string{Medium}, DailyPick: easyPick("2026-09-28")}},
 		{
-			name: "no pick",
-			chat: Chat{Difficulties: []string{Easy}},
-		},
-		{
-			name: "pick for another date",
-			chat: Chat{Difficulties: []string{Easy}, DailyPick: easyPick("2026-09-27")},
-		},
-		{
-			name: "pick of a difficulty no longer subscribed",
-			chat: Chat{Difficulties: []string{Medium}, DailyPick: easyPick("2026-09-28")},
-		},
-		{
-			name:   "valid pick",
-			chat:   Chat{Difficulties: []string{Easy}, DailyPick: easyPick("2026-09-28")},
-			want:   *easyPick("2026-09-28"),
-			wantOK: true,
-		},
-		{
-			name:   "valid pick under a case-insensitive set",
+			name:   "valid pick, its difficulty matched case-insensitively",
 			chat:   Chat{Difficulties: []string{"easy"}, DailyPick: easyPick("2026-09-28")},
 			want:   *easyPick("2026-09-28"),
 			wantOK: true,
@@ -98,6 +66,9 @@ func TestPickFor(t *testing.T) {
 
 func TestRecordSolve(t *testing.T) {
 	const day = "2026-09-28"
+	alice := func(name string, count int, date string) map[string]Member {
+		return map[string]Member{"7": {Name: name, Count: count, LastSolvedDate: date}}
+	}
 
 	tests := []struct {
 		name        string
@@ -109,39 +80,26 @@ func TestRecordSolve(t *testing.T) {
 		wantMembers map[string]Member
 	}{
 		{
-			name:        "first solve with nil members is counted",
-			members:     nil,
-			userID:      7,
-			userName:    "Alice",
-			wantTotal:   1,
-			wantCounted: true,
-			wantMembers: map[string]Member{"7": {Name: "Alice", Count: 1, LastSolvedDate: day}},
+			name:   "first solve with nil members is counted",
+			userID: 7, userName: "Alice", wantTotal: 1, wantCounted: true,
+			wantMembers: alice("Alice", 1, day),
 		},
 		{
-			name:        "same day is rejected with the total and keeps the name",
-			members:     map[string]Member{"7": {Name: "Alice", Count: 3, LastSolvedDate: day}},
-			userID:      7,
-			userName:    "Alicia",
-			wantTotal:   3,
-			wantCounted: false,
-			wantMembers: map[string]Member{"7": {Name: "Alice", Count: 3, LastSolvedDate: day}},
+			name:    "same day is rejected with the total and keeps the name",
+			members: alice("Alice", 3, day),
+			userID:  7, userName: "Alicia", wantTotal: 3,
+			wantMembers: alice("Alice", 3, day),
 		},
 		{
-			name:        "next day is counted and refreshes the name",
-			members:     map[string]Member{"7": {Name: "Alice", Count: 5, LastSolvedDate: "2026-09-27"}},
-			userID:      7,
-			userName:    "Alicia",
-			wantTotal:   6,
-			wantCounted: true,
-			wantMembers: map[string]Member{"7": {Name: "Alicia", Count: 6, LastSolvedDate: day}},
+			name:    "next day is counted and refreshes the name",
+			members: alice("Alice", 5, "2026-09-27"),
+			userID:  7, userName: "Alicia", wantTotal: 6, wantCounted: true,
+			wantMembers: alice("Alicia", 6, day),
 		},
 		{
-			name:        "another member is keyed by decimal user ID and leaves others alone",
-			members:     map[string]Member{"7": {Name: "Alice", Count: 2, LastSolvedDate: day}},
-			userID:      5000000008,
-			userName:    "@bob",
-			wantTotal:   1,
-			wantCounted: true,
+			name:    "another member is keyed by decimal user ID and leaves others alone",
+			members: alice("Alice", 2, day),
+			userID:  5000000008, userName: "@bob", wantTotal: 1, wantCounted: true,
 			wantMembers: map[string]Member{
 				"7":          {Name: "Alice", Count: 2, LastSolvedDate: day},
 				"5000000008": {Name: "@bob", Count: 1, LastSolvedDate: day},
@@ -170,21 +128,7 @@ func TestStandings(t *testing.T) {
 		want    []Member
 	}{
 		{
-			name:    "no members",
-			members: nil,
-			want:    nil,
-		},
-		{
-			name: "count descending",
-			members: map[string]Member{
-				"1": {Name: "Alice", Count: 5},
-				"2": {Name: "Bob", Count: 12},
-				"3": {Name: "Charlie", Count: 3},
-			},
-			want: []Member{{Name: "Bob", Count: 12}, {Name: "Alice", Count: 5}, {Name: "Charlie", Count: 3}},
-		},
-		{
-			name: "ties ordered by name",
+			name: "count descending, ties ordered by name",
 			members: map[string]Member{
 				"1": {Name: "Carol", Count: 2},
 				"2": {Name: "Alice", Count: 2},

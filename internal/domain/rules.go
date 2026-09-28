@@ -8,8 +8,7 @@ import (
 	"strings"
 )
 
-// Wants reports whether the chat gets a daily of difficulty as is; an empty
-// set means any difficulty.
+// Wants reports whether the chat takes a daily of difficulty; empty means any.
 func (c Chat) Wants(difficulty string) bool {
 	return len(c.Difficulties) == 0 ||
 		slices.ContainsFunc(c.Difficulties, func(d string) bool { return strings.EqualFold(d, difficulty) })
@@ -34,18 +33,17 @@ func (c *Chat) RecordSolve(userID int64, name, day string) (total int, counted b
 	if m.LastSolvedDate == day {
 		return m.Count, false
 	}
-	m.Name = name
-	m.Count++
-	m.LastSolvedDate = day
 	if c.Members == nil {
 		c.Members = make(map[string]Member)
 	}
+	m.Name = name
+	m.Count++
+	m.LastSolvedDate = day
 	c.Members[key] = m
 	return m.Count, true
 }
 
-// Standings returns the members by solve count, highest first; ties are
-// ordered by name.
+// Standings returns the members by solve count, highest first, ties by name.
 func (c Chat) Standings() []Member {
 	ms := slices.Collect(maps.Values(c.Members))
 	slices.SortFunc(ms, func(a, b Member) int {
