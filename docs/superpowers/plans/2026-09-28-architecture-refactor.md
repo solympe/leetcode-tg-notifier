@@ -1,5 +1,7 @@
 # Architecture Refactor Implementation Plan
 
+> **Status:** executed on 2026-09-28. The code blocks are the as-planned snapshots; the review commits `97a599f`..`8b163f3` then compacted and fixed them. The tree and the spec (§3.6, §4, §14) are authoritative.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (- [ ]) syntax for tracking.
 
 **Goal:** Split the single `internal/bot` package into a stdlib-only domain, a use-case core behind ctx-first ports declared by their consumers, and thin Telegram, LeetCode, JSON-file and cron adapters wired by one composition root. Texts, keyboards, callback data and `config.json` stay byte-compatible, apart from the approved deviations in spec §11.
