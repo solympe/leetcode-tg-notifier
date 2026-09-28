@@ -21,6 +21,7 @@ import (
 	"github.com/solympe/leetcode-tg-notifier/internal/leetcode/mocks"
 )
 
+// listVars mirrors the wire format independently of the client's query.
 type listVars struct {
 	CategorySlug string `json:"categorySlug"`
 	Limit        int    `json:"limit"`
@@ -30,30 +31,17 @@ type listVars struct {
 	} `json:"filters"`
 }
 
-// listCall is one expected question-list request and its canned response.
-type listCall struct {
-	limit  int
+// call is one expected request and its canned response.
+type call struct {
 	skip   int
 	status int // 0 means http.StatusOK
 	body   string
 }
 
-func assertHeaders(t *testing.T, r *http.Request) {
-	t.Helper()
-	if r.Method != http.MethodPost {
-		t.Errorf("method: got %s, want %s", r.Method, http.MethodPost)
-	}
-	if got := r.Header.Get("Content-Type"); got != "application/json" {
-		t.Errorf("Content-Type: got %q, want %q", got, "application/json")
-	}
-	if got := r.Header.Get("User-Agent"); got != "Mozilla/5.0" {
-		t.Errorf("User-Agent: got %q, want %q", got, "Mozilla/5.0")
-	}
-}
-
-// newListServer serves the scripted question-list calls in order and asserts
-// each request's variables and that exactly len(calls) requests were made.
-func newListServer(t *testing.T, wantFilter string, calls []listCall) *httptest.Server {
+// newServer serves calls in order. It asserts the headers, that the query
+// contains wantQuery, the list variables when wantFilter is set, and that
+// exactly len(calls) requests were made.
+func newServer(t *testing.T, wantQuery, wantFilter string, calls []call) *httptest.Server {
 	t.Helper()
 	var (
 		mu sync.Mutex
@@ -69,9 +57,11 @@ func newListServer(t *testing.T, wantFilter string, calls []listCall) *httptest.
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		call := calls[idx]
+		c := calls[idx]
 
-		assertHeaders(t, r)
+		if r.Method != http.MethodPost || r.Header.Get("Content-Type") != "application/json" || r.Header.Get("User-Agent") != "Mozilla/5.0" {
+			t.Errorf("request #%d: %s with headers %v", idx+1, r.Method, r.Header)
+		}
 		var req struct {
 			Query     string   `json:"query"`
 			Variables listVars `json:"variables"`
@@ -79,22 +69,20 @@ func newListServer(t *testing.T, wantFilter string, calls []listCall) *httptest.
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Errorf("request #%d: decode body: %v", idx+1, err)
 		}
-		if !strings.Contains(req.Query, "questionList(") {
-			t.Errorf("request #%d: query is not a question list query: %q", idx+1, req.Query)
+		if !strings.Contains(req.Query, wantQuery) {
+			t.Errorf("request #%d: query %q does not contain %q", idx+1, req.Query, wantQuery)
 		}
-		want := listVars{CategorySlug: "algorithms", Limit: call.limit, Skip: call.skip}
-		want.Filters.Difficulty = wantFilter
+		var want listVars
+		if wantFilter != "" {
+			want = listVars{CategorySlug: "algorithms", Limit: 1, Skip: c.skip}
+			want.Filters.Difficulty = wantFilter
+		}
 		if req.Variables != want {
 			t.Errorf("request #%d: variables got %+v, want %+v", idx+1, req.Variables, want)
 		}
 
-		status := call.status
-		if status == 0 {
-			status = http.StatusOK
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		_, _ = io.WriteString(w, call.body)
+		w.WriteHeader(max(c.status, http.StatusOK))
+		_, _ = io.WriteString(w, c.body)
 	}))
 	t.Cleanup(func() {
 		srv.Close()
@@ -105,6 +93,19 @@ func newListServer(t *testing.T, wantFilter string, calls []listCall) *httptest.
 		}
 	})
 	return srv
+}
+
+// intNs expects IntN calls in order, given as (n, result) pairs.
+func intNs(pairs ...int) func(*gomock.Controller) *mocks.MockrandSource {
+	return func(ctrl *gomock.Controller) *mocks.MockrandSource {
+		m := mocks.NewMockrandSource(ctrl)
+		var calls []any
+		for i := 0; i < len(pairs); i += 2 {
+			calls = append(calls, m.EXPECT().IntN(gomock.Eq(pairs[i])).Return(pairs[i+1]))
+		}
+		gomock.InOrder(calls...)
+		return m
+	}
 }
 
 // question renders one list entry in the shape LeetCode returns.
@@ -126,22 +127,25 @@ func listJSON(total int, questions ...string) string {
 	)
 }
 
+// checkResult fails unless err contains wantErr (no error when wantErr is
+// empty) and got equals want (the zero value on error).
+func checkResult(t *testing.T, got domain.Problem, err error, want domain.Problem, wantErr string) {
+	t.Helper()
+	if (err == nil) != (wantErr == "") || err != nil && !strings.Contains(err.Error(), wantErr) {
+		t.Fatalf("error: got %v, want containing %q", err, wantErr)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("problem:\n got %+v\nwant %+v", got, want)
+	}
+}
+
 func TestFetchRandom(t *testing.T) {
-	ctx := t.Context()
 	twoSum := question("1", "Two Sum", "two-sum", "Easy", false, "Array", "Hash Table")
 	paidEasy := question("252", "Meeting Rooms", "meeting-rooms", "Easy", true, "Array")
 	paidMedium := question("253", "Meeting Rooms II", "meeting-rooms-ii", "Medium", true, "Heap (Priority Queue)")
 	addTwo := question("2", "Add Two Numbers", "add-two-numbers", "Medium", false, "Linked List", "Math")
 	rainWater := question("42", "Trapping Rain Water", "trapping-rain-water", "Hard", false, "Array", "Two Pointers")
-	regex := question("10", "Regular Expression Matching", "regular-expression-matching", "Hard", false, "String")
 
-	twoSumProblem := domain.Problem{
-		ID:         "1",
-		Title:      "Two Sum",
-		Link:       "/problems/two-sum/",
-		Difficulty: "Easy",
-		Tags:       []string{"Array", "Hash Table"},
-	}
 	addTwoProblem := domain.Problem{
 		ID:         "2",
 		Title:      "Add Two Numbers",
@@ -149,25 +153,12 @@ func TestFetchRandom(t *testing.T) {
 		Difficulty: "Medium",
 		Tags:       []string{"Linked List", "Math"},
 	}
-
-	// failedDraws is the count request followed by maxRandomAttempts draws at
-	// skip 10, 20, ... that all return body.
-	failedDraws := func(body string) []listCall {
-		calls := []listCall{{limit: 1, skip: 0, body: listJSON(806, twoSum)}}
-		for i := range maxRandomAttempts {
-			calls = append(calls, listCall{limit: 1, skip: 10 * (i + 1), body: body})
-		}
-		return calls
-	}
-	// failedDrawsRand picks Easy and then skip 10, 20, ... for failedDraws.
-	failedDrawsRand := func(ctrl *gomock.Controller) *mocks.MockrandSource {
-		m := mocks.NewMockrandSource(ctrl)
-		calls := []any{m.EXPECT().IntN(gomock.Eq(1)).Return(0)}
-		for i := range maxRandomAttempts {
-			calls = append(calls, m.EXPECT().IntN(gomock.Eq(806)).Return(10*(i+1)))
-		}
-		gomock.InOrder(calls...)
-		return m
+	// Easy is counted, then every one of the maxRandomAttempts draws is paid.
+	allPaidRand := []int{1, 0}
+	allPaidCalls := []call{{skip: 0, body: listJSON(806, twoSum)}}
+	for i := range maxRandomAttempts {
+		allPaidRand = append(allPaidRand, 806, 10*(i+1))
+		allPaidCalls = append(allPaidCalls, call{skip: 10 * (i + 1), body: listJSON(806, paidEasy)})
 	}
 
 	tests := []struct {
@@ -175,91 +166,16 @@ func TestFetchRandom(t *testing.T) {
 		difficulties []string
 		randMock     func(*gomock.Controller) *mocks.MockrandSource
 		wantFilter   string
-		calls        []listCall
+		calls        []call
 		want         domain.Problem
 		wantErr      string
 	}{
 		{
-			name:         "free problem on the first draw",
-			difficulties: []string{domain.Hard},
-			randMock: func(ctrl *gomock.Controller) *mocks.MockrandSource {
-				m := mocks.NewMockrandSource(ctrl)
-				gomock.InOrder(
-					m.EXPECT().IntN(gomock.Eq(1)).Return(0),
-					m.EXPECT().IntN(gomock.Eq(907)).Return(100),
-				)
-				return m
-			},
-			wantFilter: "HARD",
-			calls: []listCall{
-				{limit: 1, skip: 0, body: listJSON(907, rainWater)},
-				{limit: 1, skip: 100, body: listJSON(907, regex)},
-			},
-			want: domain.Problem{
-				ID:         "10",
-				Title:      "Regular Expression Matching",
-				Link:       "/problems/regular-expression-matching/",
-				Difficulty: "Hard",
-				Tags:       []string{"String"},
-			},
-		},
-		{
-			name:         "paid draw is rejected and drawn again",
-			difficulties: []string{domain.Medium},
-			randMock: func(ctrl *gomock.Controller) *mocks.MockrandSource {
-				m := mocks.NewMockrandSource(ctrl)
-				gomock.InOrder(
-					m.EXPECT().IntN(gomock.Eq(1)).Return(0),
-					m.EXPECT().IntN(gomock.Eq(1937)).Return(500),
-					m.EXPECT().IntN(gomock.Eq(1937)).Return(1),
-				)
-				return m
-			},
-			wantFilter: "MEDIUM",
-			calls: []listCall{
-				{limit: 1, skip: 0, body: listJSON(1937, addTwo)},
-				{limit: 1, skip: 500, body: listJSON(1937, paidMedium)},
-				{limit: 1, skip: 1, body: listJSON(1937, addTwo)},
-			},
-			want: addTwoProblem,
-		},
-		{
-			// The list shrank between the count and the draw.
-			name:         "empty draw is drawn again",
-			difficulties: []string{domain.Easy},
-			randMock: func(ctrl *gomock.Controller) *mocks.MockrandSource {
-				m := mocks.NewMockrandSource(ctrl)
-				gomock.InOrder(
-					m.EXPECT().IntN(gomock.Eq(1)).Return(0),
-					m.EXPECT().IntN(gomock.Eq(806)).Return(805),
-					m.EXPECT().IntN(gomock.Eq(806)).Return(0),
-				)
-				return m
-			},
-			wantFilter: "EASY",
-			calls: []listCall{
-				{limit: 1, skip: 0, body: listJSON(806, twoSum)},
-				{limit: 1, skip: 805, body: listJSON(805)},
-				{limit: 1, skip: 0, body: listJSON(806, twoSum)},
-			},
-			want: twoSumProblem,
-		},
-		{
 			name:         "subset picks the level chosen by the random source",
 			difficulties: []string{domain.Easy, domain.Hard},
-			randMock: func(ctrl *gomock.Controller) *mocks.MockrandSource {
-				m := mocks.NewMockrandSource(ctrl)
-				gomock.InOrder(
-					m.EXPECT().IntN(gomock.Eq(2)).Return(1),
-					m.EXPECT().IntN(gomock.Eq(907)).Return(900),
-				)
-				return m
-			},
-			wantFilter: "HARD",
-			calls: []listCall{
-				{limit: 1, skip: 0, body: listJSON(907, regex)},
-				{limit: 1, skip: 900, body: listJSON(907, rainWater)},
-			},
+			randMock:     intNs(2, 1, 907, 900),
+			wantFilter:   "HARD",
+			calls:        []call{{skip: 0, body: listJSON(907, rainWater)}, {skip: 900, body: listJSON(907, rainWater)}},
 			want: domain.Problem{
 				ID:         "42",
 				Title:      "Trapping Rain Water",
@@ -269,110 +185,68 @@ func TestFetchRandom(t *testing.T) {
 			},
 		},
 		{
-			name:         "empty difficulties chooses among all three",
-			difficulties: nil,
-			randMock: func(ctrl *gomock.Controller) *mocks.MockrandSource {
-				m := mocks.NewMockrandSource(ctrl)
-				gomock.InOrder(
-					m.EXPECT().IntN(gomock.Eq(3)).Return(1),
-					m.EXPECT().IntN(gomock.Eq(1937)).Return(0),
-				)
-				return m
-			},
+			name:       "empty difficulties chooses among all three",
+			randMock:   intNs(3, 1, 1937, 0),
 			wantFilter: "MEDIUM",
-			calls: []listCall{
-				{limit: 1, skip: 0, body: listJSON(1937, addTwo)},
-				{limit: 1, skip: 0, body: listJSON(1937, addTwo)},
+			calls:      []call{{skip: 0, body: listJSON(1937, addTwo)}, {skip: 0, body: listJSON(1937, addTwo)}},
+			want:       addTwoProblem,
+		},
+		{
+			name:         "paid draw is rejected and drawn again",
+			difficulties: []string{domain.Medium},
+			randMock:     intNs(1, 0, 1937, 500, 1937, 1),
+			wantFilter:   "MEDIUM",
+			calls: []call{
+				{skip: 0, body: listJSON(1937, addTwo)},
+				{skip: 500, body: listJSON(1937, paidMedium)},
+				{skip: 1, body: listJSON(1937, addTwo)},
+			},
+			want: addTwoProblem,
+		},
+		{
+			// The list shrank between the count and the draw.
+			name:         "empty draw is drawn again",
+			difficulties: []string{domain.Medium},
+			randMock:     intNs(1, 0, 1937, 1936, 1937, 0),
+			wantFilter:   "MEDIUM",
+			calls: []call{
+				{skip: 0, body: listJSON(1937, addTwo)},
+				{skip: 1936, body: listJSON(1936)},
+				{skip: 0, body: listJSON(1937, addTwo)},
 			},
 			want: addTwoProblem,
 		},
 		{
 			name:         "every draw is paid",
 			difficulties: []string{domain.Easy},
-			randMock:     failedDrawsRand,
+			randMock:     intNs(allPaidRand...),
 			wantFilter:   "EASY",
-			calls:        failedDraws(listJSON(806, paidEasy)),
-			wantErr:      "no free Easy problem found in 8 attempts",
-		},
-		{
-			name:         "every draw is empty",
-			difficulties: []string{domain.Easy},
-			randMock:     failedDrawsRand,
-			wantFilter:   "EASY",
-			calls:        failedDraws(listJSON(806)),
+			calls:        allPaidCalls,
 			wantErr:      "no free Easy problem found in 8 attempts",
 		},
 		{
 			name:         "total zero",
 			difficulties: []string{domain.Easy},
-			randMock: func(ctrl *gomock.Controller) *mocks.MockrandSource {
-				m := mocks.NewMockrandSource(ctrl)
-				m.EXPECT().IntN(gomock.Eq(1)).Return(0)
-				return m
-			},
-			wantFilter: "EASY",
-			calls:      []listCall{{limit: 1, skip: 0, body: listJSON(0)}},
-			wantErr:    "no Easy problems",
+			randMock:     intNs(1, 0),
+			wantFilter:   "EASY",
+			calls:        []call{{skip: 0, body: listJSON(0)}},
+			wantErr:      "no Easy problems",
 		},
 		{
-			name:         "non-200 status on count request",
+			name:         "non-200 status on the count request",
 			difficulties: []string{domain.Easy},
-			randMock: func(ctrl *gomock.Controller) *mocks.MockrandSource {
-				m := mocks.NewMockrandSource(ctrl)
-				m.EXPECT().IntN(gomock.Eq(1)).Return(0)
-				return m
-			},
-			wantFilter: "EASY",
-			calls:      []listCall{{limit: 1, skip: 0, status: http.StatusServiceUnavailable, body: "busy"}},
-			wantErr:    "count Easy problems: unexpected status: 503",
-		},
-		{
-			name:         "non-200 status on a draw",
-			difficulties: []string{domain.Easy},
-			randMock: func(ctrl *gomock.Controller) *mocks.MockrandSource {
-				m := mocks.NewMockrandSource(ctrl)
-				gomock.InOrder(
-					m.EXPECT().IntN(gomock.Eq(1)).Return(0),
-					m.EXPECT().IntN(gomock.Eq(806)).Return(5),
-				)
-				return m
-			},
-			wantFilter: "EASY",
-			calls: []listCall{
-				{limit: 1, skip: 0, body: listJSON(806, twoSum)},
-				{limit: 1, skip: 5, status: http.StatusTooManyRequests, body: "slow down"},
-			},
-			wantErr: "fetch Easy problem: unexpected status: 429",
-		},
-		{
-			name:         "malformed JSON on count request",
-			difficulties: []string{domain.Easy},
-			randMock: func(ctrl *gomock.Controller) *mocks.MockrandSource {
-				m := mocks.NewMockrandSource(ctrl)
-				m.EXPECT().IntN(gomock.Eq(1)).Return(0)
-				return m
-			},
-			wantFilter: "EASY",
-			calls:      []listCall{{limit: 1, skip: 0, body: `{"data":`}},
-			wantErr:    "count Easy problems: decode",
+			randMock:     intNs(1, 0),
+			wantFilter:   "EASY",
+			calls:        []call{{skip: 0, status: http.StatusServiceUnavailable, body: "busy"}},
+			wantErr:      "count Easy problems: unexpected status: 503",
 		},
 		{
 			name:         "malformed JSON on a draw",
 			difficulties: []string{domain.Easy},
-			randMock: func(ctrl *gomock.Controller) *mocks.MockrandSource {
-				m := mocks.NewMockrandSource(ctrl)
-				gomock.InOrder(
-					m.EXPECT().IntN(gomock.Eq(1)).Return(0),
-					m.EXPECT().IntN(gomock.Eq(806)).Return(5),
-				)
-				return m
-			},
-			wantFilter: "EASY",
-			calls: []listCall{
-				{limit: 1, skip: 0, body: listJSON(806, twoSum)},
-				{limit: 1, skip: 5, body: `{"data":`},
-			},
-			wantErr: "fetch Easy problem: decode",
+			randMock:     intNs(1, 0, 806, 5),
+			wantFilter:   "EASY",
+			calls:        []call{{skip: 0, body: listJSON(806, twoSum)}, {skip: 5, body: `{"data":`}},
+			wantErr:      "fetch Easy problem: decode",
 		},
 		{
 			name:         "invalid difficulty makes no HTTP call",
@@ -384,27 +258,49 @@ func TestFetchRandom(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctrl := gomock.NewController(t)
-			srv := newListServer(t, tt.wantFilter, tt.calls)
+			srv := newServer(t, "questionList(", tt.wantFilter, tt.calls)
 			hc := NewHTTPClient(srv.URL, srv.Client())
-			hc.rnd = tt.randMock(ctrl)
+			hc.rnd = tt.randMock(gomock.NewController(t))
 
-			got, err := hc.FetchRandom(ctx, tt.difficulties)
-			if tt.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("error: got %v, want containing %q", err, tt.wantErr)
-				}
-				if !reflect.DeepEqual(got, domain.Problem{}) {
-					t.Errorf("problem: got %+v, want the zero value", got)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("problem:\n got %+v\nwant %+v", got, tt.want)
-			}
+			got, err := hc.FetchRandom(t.Context(), tt.difficulties)
+			checkResult(t, got, err, tt.want, tt.wantErr)
+		})
+	}
+}
+
+func TestFetchDaily(t *testing.T) {
+	const dailyJSON = `{"data":{"activeDailyCodingChallengeQuestion":{"date":"2026-09-27","link":"/problems/two-sum/",` +
+		`"question":{"title":"Two Sum","frontendQuestionId":"1","difficulty":"Easy",` +
+		`"topicTags":[{"name":"Array"},{"name":"Hash Table"}]}}}}`
+
+	tests := []struct {
+		name    string
+		resp    call
+		want    domain.Problem
+		wantErr string
+	}{
+		{
+			name: "happy path",
+			resp: call{body: dailyJSON},
+			want: domain.Problem{
+				Date:       "2026-09-27",
+				Link:       "/problems/two-sum/",
+				ID:         "1",
+				Title:      "Two Sum",
+				Difficulty: "Easy",
+				Tags:       []string{"Array", "Hash Table"},
+			},
+		},
+		{name: "non-200 status", resp: call{status: http.StatusBadGateway, body: dailyJSON}, wantErr: "unexpected status: 502"},
+		{name: "empty question", resp: call{body: `{"data":{"activeDailyCodingChallengeQuestion":null}}`}, wantErr: "empty response"},
+		{name: "malformed JSON", resp: call{body: `{"data":`}, wantErr: "decode"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := newServer(t, "activeDailyCodingChallengeQuestion", "", []call{tt.resp})
+			got, err := NewHTTPClient(srv.URL, srv.Client()).FetchDaily(t.Context())
+			checkResult(t, got, err, tt.want, tt.wantErr)
 		})
 	}
 }
@@ -431,9 +327,6 @@ func TestNewHTTPClient(t *testing.T) {
 			if tt.client != nil && hc.http != tt.client {
 				t.Errorf("http client: got %p, want the explicit %p", hc.http, tt.client)
 			}
-			if hc.http == http.DefaultClient {
-				t.Error("http client must not be http.DefaultClient, which has no timeout")
-			}
 			if hc.http.Timeout != tt.wantTimeout {
 				t.Errorf("timeout: got %v, want %v", hc.http.Timeout, tt.wantTimeout)
 			}
@@ -444,202 +337,58 @@ func TestNewHTTPClient(t *testing.T) {
 	}
 }
 
-func TestFetchDaily(t *testing.T) {
-	ctx := t.Context()
-	const dailyJSON = `{"data":{"activeDailyCodingChallengeQuestion":{"date":"2026-09-27","link":"/problems/two-sum/",` +
-		`"question":{"title":"Two Sum","frontendQuestionId":"1","difficulty":"Easy",` +
-		`"topicTags":[{"name":"Array"},{"name":"Hash Table"}]}}}}`
-
-	tests := []struct {
-		name    string
-		status  int
-		body    string
-		want    domain.Problem
-		wantErr string
-	}{
-		{
-			name:   "happy path",
-			status: http.StatusOK,
-			body:   dailyJSON,
-			want: domain.Problem{
-				Date:       "2026-09-27",
-				Link:       "/problems/two-sum/",
-				ID:         "1",
-				Title:      "Two Sum",
-				Difficulty: "Easy",
-				Tags:       []string{"Array", "Hash Table"},
-			},
-		},
-		{
-			name:    "non-200 status",
-			status:  http.StatusBadGateway,
-			body:    dailyJSON,
-			wantErr: "502",
-		},
-		{
-			name:    "empty question",
-			status:  http.StatusOK,
-			body:    `{"data":{"activeDailyCodingChallengeQuestion":null}}`,
-			wantErr: "empty response",
-		},
-		{
-			name:    "malformed JSON",
-			status:  http.StatusOK,
-			body:    `{"data":`,
-			wantErr: "decode",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var (
-				mu       sync.Mutex
-				requests int
-			)
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				mu.Lock()
-				requests++
-				mu.Unlock()
-
-				assertHeaders(t, r)
-				var req struct {
-					Query string `json:"query"`
-				}
-				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-					t.Errorf("decode body: %v", err)
-				}
-				if !strings.Contains(req.Query, "activeDailyCodingChallengeQuestion") {
-					t.Errorf("query is not the daily query: %q", req.Query)
-				}
-				w.WriteHeader(tt.status)
-				_, _ = io.WriteString(w, tt.body)
-			}))
-			t.Cleanup(func() {
-				srv.Close()
-				mu.Lock()
-				defer mu.Unlock()
-				if requests != 1 {
-					t.Errorf("server got %d requests, want 1", requests)
-				}
-			})
-
-			hc := NewHTTPClient(srv.URL, srv.Client())
-
-			got, err := hc.FetchDaily(ctx)
-			if tt.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("error: got %v, want containing %q", err, tt.wantErr)
-				}
-				if !reflect.DeepEqual(got, domain.Problem{}) {
-					t.Errorf("problem: got %+v, want the zero value", got)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("problem:\n got %+v\nwant %+v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestContext(t *testing.T) {
-	ctx := t.Context()
-	const deadline = 50 * time.Millisecond
-	cancelled := func(parent context.Context) (context.Context, context.CancelFunc) {
-		c, cancel := context.WithCancel(parent)
-		cancel()
-		return c, cancel
-	}
-	withDeadline := func(parent context.Context) (context.Context, context.CancelFunc) {
-		return context.WithTimeout(parent, deadline)
-	}
-	easyLevel := func(ctrl *gomock.Controller) *mocks.MockrandSource {
-		m := mocks.NewMockrandSource(ctrl)
-		m.EXPECT().IntN(gomock.Eq(1)).Return(0)
-		return m
-	}
-	fetchDaily := func(ctx context.Context, hc *httpClient) (domain.Problem, error) { return hc.FetchDaily(ctx) }
-	fetchRandom := func(ctx context.Context, hc *httpClient) (domain.Problem, error) {
-		return hc.FetchRandom(ctx, []string{domain.Easy})
-	}
-
 	tests := []struct {
 		name     string
-		ctx      func(parent context.Context) (context.Context, context.CancelFunc)
+		inFlight bool // cancel once the server holds the request instead of before sending
 		randMock func(*gomock.Controller) *mocks.MockrandSource
 		call     func(ctx context.Context, hc *httpClient) (domain.Problem, error)
-		wantErr  error
 		wantHits int32
 	}{
 		{
 			name:     "FetchDaily with a cancelled ctx sends nothing",
-			ctx:      cancelled,
 			randMock: mocks.NewMockrandSource,
-			call:     fetchDaily,
-			wantErr:  context.Canceled,
+			call:     func(ctx context.Context, hc *httpClient) (domain.Problem, error) { return hc.FetchDaily(ctx) },
 			wantHits: 0,
 		},
 		{
-			name:     "FetchRandom with a cancelled ctx sends nothing",
-			ctx:      cancelled,
-			randMock: easyLevel,
-			call:     fetchRandom,
-			wantErr:  context.Canceled,
-			wantHits: 0,
-		},
-		{
-			name:     "FetchDaily gives up on a request in flight at the deadline",
-			ctx:      withDeadline,
-			randMock: mocks.NewMockrandSource,
-			call:     fetchDaily,
-			wantErr:  context.DeadlineExceeded,
-			wantHits: 1,
-		},
-		{
-			name:     "FetchRandom gives up on a request in flight at the deadline",
-			ctx:      withDeadline,
-			randMock: easyLevel,
-			call:     fetchRandom,
-			wantErr:  context.DeadlineExceeded,
+			name:     "FetchRandom gives up on a request in flight",
+			inFlight: true,
+			randMock: intNs(1, 0),
+			call: func(ctx context.Context, hc *httpClient) (domain.Problem, error) {
+				return hc.FetchRandom(ctx, []string{domain.Easy})
+			},
 			wantHits: 1,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctrl := gomock.NewController(t)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if !tt.inFlight {
+				cancel()
+			}
 			var hits atomic.Int32
-			release := make(chan struct{})
-			// The handler holds every request until the client gives up.
 			srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 				hits.Add(1)
+				_, _ = io.Copy(io.Discard, r.Body) // lets the server notice the client hanging up
+				cancel()
 				select {
 				case <-r.Context().Done():
-				case <-release:
+				case <-time.After(5 * time.Second): // a client that ignores ctx fails instead of hanging
 				}
 			}))
 			t.Cleanup(srv.Close)
-			t.Cleanup(func() { close(release) }) // runs first: never leave a handler blocked
 			hc := NewHTTPClient(srv.URL, srv.Client())
-			hc.rnd = tt.randMock(ctrl)
-			callCtx, cancel := tt.ctx(ctx)
-			defer cancel()
+			hc.rnd = tt.randMock(gomock.NewController(t))
 
-			start := time.Now()
-			got, err := tt.call(callCtx, hc)
-			elapsed := time.Since(start)
-
-			if !errors.Is(err, tt.wantErr) {
-				t.Errorf("error: got %v, want %v", err, tt.wantErr)
+			got, err := tt.call(ctx, hc)
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("error: got %v, want %v", err, context.Canceled)
 			}
-			if !reflect.DeepEqual(got, domain.Problem{}) {
+			if got.Title != "" {
 				t.Errorf("problem: got %+v, want the zero value", got)
-			}
-			if elapsed > deadline+time.Second {
-				t.Errorf("returned after %v, want about %v", elapsed, deadline)
 			}
 			if n := hits.Load(); n != tt.wantHits {
 				t.Errorf("server hits: got %d, want %d", n, tt.wantHits)

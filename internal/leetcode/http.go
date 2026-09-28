@@ -22,7 +22,6 @@ const (
 	graphqlURL         = "https://leetcode.com/graphql"
 	defaultHTTPTimeout = 10 * time.Second
 
-	randomCategory = "algorithms"
 	// Up to ~17% of a level is paid (Medium), so 8 paid draws in a row happen
 	// about once in a million picks.
 	maxRandomAttempts = 8
@@ -30,9 +29,12 @@ const (
 
 const dailyQuery = `{"query":"query { activeDailyCodingChallengeQuestion { date link question { title frontendQuestionId: questionFrontendId difficulty topicTags { name } } } }"}`
 
-const questionListQuery = `query q($categorySlug: String, $limit: Int, $skip: Int, $filters: QuestionListFilterInput) {` +
+// listQuery takes the skip and an upper-case difficulty, one of FetchRandom's
+// validated levels, so it needs no JSON escaping.
+const listQuery = `{"query":"query q($categorySlug: String, $limit: Int, $skip: Int, $filters: QuestionListFilterInput) {` +
 	` problemsetQuestionList: questionList(categorySlug: $categorySlug, limit: $limit, skip: $skip, filters: $filters) {` +
-	` total: totalNum questions: data { frontendQuestionId: questionFrontendId title titleSlug difficulty paidOnly: isPaidOnly topicTags { name } } } }`
+	` total: totalNum questions: data { frontendQuestionId: questionFrontendId title titleSlug difficulty paidOnly: isPaidOnly topicTags { name } } } }",` +
+	`"variables":{"categorySlug":"algorithms","limit":1,"skip":%d,"filters":{"difficulty":"%s"}}}`
 
 type topicTag struct {
 	Name string `json:"name"`
@@ -51,22 +53,6 @@ type lcResponse struct {
 			} `json:"question"`
 		} `json:"activeDailyCodingChallengeQuestion"`
 	} `json:"data"`
-}
-
-type listRequest struct {
-	Query     string        `json:"query"`
-	Variables listVariables `json:"variables"`
-}
-
-type listVariables struct {
-	CategorySlug string      `json:"categorySlug"`
-	Limit        int         `json:"limit"`
-	Skip         int         `json:"skip"`
-	Filters      listFilters `json:"filters"`
-}
-
-type listFilters struct {
-	Difficulty string `json:"difficulty"` // upper-case: EASY, MEDIUM, HARD
 }
 
 type listQuestion struct {
@@ -94,7 +80,6 @@ type randSource interface {
 	IntN(n int) int
 }
 
-// globalRand is the randSource backed by math/rand/v2.
 type globalRand struct{}
 
 func (globalRand) IntN(n int) int { return rand.IntN(n) }
@@ -105,9 +90,8 @@ type httpClient struct {
 	rnd      randSource
 }
 
-// NewHTTPClient returns a LeetCode client that POSTs to endpoint, or to
-// graphqlURL when endpoint is empty. It sends requests with c, or with a
-// client limited to defaultHTTPTimeout per request when c is nil.
+// NewHTTPClient POSTs to endpoint ("" = graphqlURL) with c (nil = a client
+// with defaultHTTPTimeout).
 func NewHTTPClient(endpoint string, c *http.Client) *httpClient {
 	if c == nil {
 		c = &http.Client{Timeout: defaultHTTPTimeout}
@@ -116,8 +100,6 @@ func NewHTTPClient(endpoint string, c *http.Client) *httpClient {
 }
 
 // query POSTs a GraphQL payload and decodes a 200 OK JSON response into out.
-// The request is bound to ctx and to the client's per-request timeout,
-// whichever ends first.
 func (hc *httpClient) query(ctx context.Context, payload []byte, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, hc.endpoint, bytes.NewReader(payload))
 	if err != nil {
@@ -179,7 +161,7 @@ func (hc *httpClient) FetchRandom(ctx context.Context, difficulties []string) (d
 	}
 	d := difficulties[hc.rnd.IntN(len(difficulties))]
 
-	first, err := hc.fetchQuestionList(ctx, d, 1, 0)
+	first, err := hc.fetchOne(ctx, d, 0)
 	if err != nil {
 		return domain.Problem{}, fmt.Errorf("count %s problems: %w", d, err)
 	}
@@ -191,7 +173,7 @@ func (hc *httpClient) FetchRandom(ctx context.Context, difficulties []string) (d
 	// (LeetCode ignores the premiumOnly filter) or missing, so every free
 	// problem is equally likely.
 	for range maxRandomAttempts {
-		draw, err := hc.fetchQuestionList(ctx, d, 1, hc.rnd.IntN(first.Total))
+		draw, err := hc.fetchOne(ctx, d, hc.rnd.IntN(first.Total))
 		if err != nil {
 			return domain.Problem{}, fmt.Errorf("fetch %s problem: %w", d, err)
 		}
@@ -210,24 +192,11 @@ func (hc *httpClient) FetchRandom(ctx context.Context, difficulties []string) (d
 	return domain.Problem{}, fmt.Errorf("no free %s problem found in %d attempts", d, maxRandomAttempts)
 }
 
-func (hc *httpClient) fetchQuestionList(ctx context.Context, difficulty string, limit, skip int) (questionList, error) {
-	payload, err := json.Marshal(listRequest{
-		Query: questionListQuery,
-		Variables: listVariables{
-			CategorySlug: randomCategory,
-			Limit:        limit,
-			Skip:         skip,
-			Filters:      listFilters{Difficulty: strings.ToUpper(difficulty)},
-		},
-	})
-	if err != nil {
-		return questionList{}, fmt.Errorf("marshal: %w", err)
-	}
+// fetchOne requests the problem at skip in the difficulty's algorithms list.
+func (hc *httpClient) fetchOne(ctx context.Context, difficulty string, skip int) (questionList, error) {
 	var resp listResponse
-	if err := hc.query(ctx, payload, &resp); err != nil {
-		return questionList{}, err
-	}
-	return resp.Data.ProblemsetQuestionList, nil
+	err := hc.query(ctx, []byte(fmt.Sprintf(listQuery, skip, strings.ToUpper(difficulty))), &resp)
+	return resp.Data.ProblemsetQuestionList, err
 }
 
 func tagNames(tags []topicTag) []string {
