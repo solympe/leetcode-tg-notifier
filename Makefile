@@ -1,4 +1,4 @@
-.PHONY: build test lint tidy
+.PHONY: build test lint generate tidy
 
 build:
 	go build ./...
@@ -8,6 +8,9 @@ test:
 
 lint:
 	golangci-lint run ./...
+
+generate:
+	PATH="$$(go env GOPATH)/bin:$$PATH" go generate ./...
 
 tidy:
 	go mod tidy
