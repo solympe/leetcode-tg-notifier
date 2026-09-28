@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
-	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,20 +35,17 @@ type button struct{ text, data string }
 // keyboard is an expected inline keyboard; nil means no keyboard.
 type keyboard [][]button
 
-func (k keyboard) matches(got *tgbotapi.InlineKeyboardMarkup) bool {
-	if k == nil || got == nil {
-		return k == nil && got == nil
-	}
-	if len(got.InlineKeyboard) != len(k) {
+func (k keyboard) matches(markup *tgbotapi.InlineKeyboardMarkup) bool {
+	got := buttons(markup)
+	if (k == nil) != (got == nil) || len(got) != len(k) {
 		return false
 	}
 	for i, row := range k {
-		if len(got.InlineKeyboard[i]) != len(row) {
+		if len(got[i]) != len(row) {
 			return false
 		}
 		for j, want := range row {
-			b := got.InlineKeyboard[i][j]
-			if b.CallbackData == nil || *b.CallbackData != want.data || (want.text != "" && b.Text != want.text) {
+			if got[i][j].data != want.data || (want.text != "" && got[i][j].text != want.text) {
 				return false
 			}
 		}
@@ -56,30 +53,34 @@ func (k keyboard) matches(got *tgbotapi.InlineKeyboardMarkup) bool {
 	return true
 }
 
-func (k keyboard) String() string {
-	if k == nil {
-		return "<none>"
-	}
-	rows := make([]string, 0, len(k))
-	for _, row := range k {
-		buttons := make([]string, 0, len(row))
-		for _, b := range row {
-			buttons = append(buttons, b.text+"|"+b.data)
-		}
-		rows = append(rows, "["+strings.Join(buttons, ", ")+"]")
-	}
-	return strings.Join(rows, " ")
-}
-
 // env is one hermetic bot: a temp dir, the two fakes and the application
 // that main would build, started with a fresh ctx.
 type env struct {
-	t    *testing.T
-	dir  string
-	tg   *fakeTelegram
-	lc   *fakeLeetCode
-	a    *application // the last started app; kept after stop()
-	halt func()       // stops the last started app, once
+	t     *testing.T
+	dir   string
+	tg    *fakeTelegram
+	lc    *fakeLeetCode
+	a     *application // the last started app; kept after stop()
+	sched *lifecycle   // wraps e.a.sched
+	stop  func()       // cancels the last started app's ctx and waits for Run, once
+}
+
+// lifecycle wraps the app's scheduler to check that Run starts and stops it.
+// onStop, when set, runs as Run reaches shutdown step 4.
+type lifecycle struct {
+	jobRunner
+	started, stopped atomic.Bool
+	onStop           func()
+}
+
+func (l *lifecycle) Start() { l.started.Store(true); l.jobRunner.Start() }
+
+func (l *lifecycle) Stop() {
+	l.stopped.Store(true)
+	if l.onStop != nil {
+		l.onStop()
+	}
+	l.jobRunner.Stop()
 }
 
 func newEnv(t *testing.T) *env {
@@ -109,6 +110,8 @@ func (e *env) start() {
 		cancel()
 		e.t.Fatalf("New: %v", err)
 	}
+	e.sched = &lifecycle{jobRunner: a.sched}
+	a.sched = e.sched
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -116,20 +119,22 @@ func (e *env) start() {
 	}()
 	var once sync.Once
 	e.a = a
-	e.halt = func() {
+	e.stop = func() {
 		once.Do(func() {
 			cancel()
 			select {
 			case <-done:
+				if !e.sched.started.Load() || !e.sched.stopped.Load() {
+					e.t.Errorf("Run did not start and stop the scheduler")
+				}
 			case <-time.After(waitFor):
 				e.t.Errorf("Run did not return within %v of cancel", waitFor)
 			}
 		})
 	}
-	e.t.Cleanup(e.halt)
+	e.t.Cleanup(e.stop)
 }
 
-// say sends a text message from user to the bot.
 func (e *env) say(chatID int64, from tgbotapi.User, text string) {
 	e.tg.say(chatID, from, text)
 }
@@ -149,7 +154,7 @@ func (e *env) sent(chatID int64, text string, kb keyboard) int {
 	e.t.Helper()
 	c := e.expectMessage(chatID)
 	if c.method != "sendMessage" || c.blocked || c.text != text || !kb.matches(c.kb) {
-		e.t.Fatalf("chat %d:\n got %s\nwant sendMessage text=%q kb=%s\n%s", chatID, c, text, kb, e.tg.transcript(chatID))
+		e.t.Fatalf("chat %d:\n got %s\nwant sendMessage text=%q kb=%v\n%s", chatID, c, text, kb, e.tg.transcript(chatID))
 	}
 	return c.msgID
 }
@@ -203,14 +208,6 @@ type legacyChat struct {
 	DailyPick    *legacyPick           `json:"daily_pick,omitempty"`
 }
 
-// stop cancels the app's ctx and waits for Run to return.
-func (e *env) stop() {
-	e.t.Helper()
-	e.halt()
-}
-
-// restart stops the app after every update so far is handled and starts a
-// new one on the same dir and fakes.
 func (e *env) restart() {
 	e.t.Helper()
 	e.sync()
@@ -218,7 +215,6 @@ func (e *env) restart() {
 	e.start()
 }
 
-// seed writes config.json before start.
 func (e *env) seed(raw string) {
 	e.t.Helper()
 	if err := os.WriteFile(filepath.Join(e.dir, "config.json"), []byte(raw), 0o644); err != nil {
@@ -244,7 +240,6 @@ func (e *env) stored(chatID int64) (legacyChat, bool) {
 	return c, ok
 }
 
-// storedEq asserts that config.json holds exactly want for the chat.
 func (e *env) storedEq(chatID int64, want legacyChat) {
 	e.t.Helper()
 	got, ok := e.stored(chatID)
@@ -257,7 +252,6 @@ func (e *env) storedEq(chatID int64, want legacyChat) {
 	}
 }
 
-// notStored asserts that config.json has no entry for the chat.
 func (e *env) notStored(chatID int64) {
 	e.t.Helper()
 	if got, ok := e.stored(chatID); ok {
@@ -319,7 +313,6 @@ func (e *env) pressInline(from tgbotapi.User, data string) string {
 	return e.tg.callback(0, from, 0, true, data)
 }
 
-// block makes later sendMessage calls to the chat fail with 403.
 func (e *env) block(chatID int64) {
 	e.tg.block(chatID)
 }
@@ -329,16 +322,15 @@ func (e *env) edited(chatID int64, msgID int, text string, kb keyboard) {
 	e.t.Helper()
 	c := e.expectMessage(chatID)
 	if c.method != "editMessageText" || c.msgID != msgID || c.text != text || !kb.matches(c.kb) {
-		e.t.Fatalf("chat %d:\n got %s\nwant editMessageText msg=%d text=%q kb=%s\n%s", chatID, c, msgID, text, kb, e.tg.transcript(chatID))
+		e.t.Fatalf("chat %d:\n got %s\nwant editMessageText msg=%d text=%q kb=%v\n%s", chatID, c, msgID, text, kb, e.tg.transcript(chatID))
 	}
 }
 
-// rekeyed expects an editMessageReplyMarkup of msgID.
 func (e *env) rekeyed(chatID int64, msgID int, kb keyboard) {
 	e.t.Helper()
 	c := e.expectMessage(chatID)
 	if c.method != "editMessageReplyMarkup" || c.msgID != msgID || !kb.matches(c.kb) {
-		e.t.Fatalf("chat %d:\n got %s\nwant editMessageReplyMarkup msg=%d kb=%s\n%s", chatID, c, msgID, kb, e.tg.transcript(chatID))
+		e.t.Fatalf("chat %d:\n got %s\nwant editMessageReplyMarkup msg=%d kb=%v\n%s", chatID, c, msgID, kb, e.tg.transcript(chatID))
 	}
 }
 
@@ -352,7 +344,6 @@ func (e *env) blockedAttempt(chatID int64) string {
 	return c.text
 }
 
-// expectAnswer returns the answer to callback cbID.
 func (e *env) expectAnswer(cbID string) string {
 	e.t.Helper()
 	text, ok := e.tg.answer(cbID, waitFor)
@@ -362,7 +353,6 @@ func (e *env) expectAnswer(cbID string) string {
 	return text
 }
 
-// answered asserts the answer to callback cbID.
 func (e *env) answered(cbID, want string) {
 	e.t.Helper()
 	if got := e.expectAnswer(cbID); got != want {

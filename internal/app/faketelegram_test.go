@@ -42,7 +42,7 @@ type tgCall struct {
 func (c tgCall) String() string {
 	s := fmt.Sprintf("%s msg=%d parse_mode=%q text=%q", c.method, c.msgID, c.parseMode, c.text)
 	if c.kb != nil {
-		s += " kb=" + markupString(c.kb)
+		s += fmt.Sprintf(" kb=%v", buttons(c.kb))
 	}
 	if c.blocked {
 		s += " (403)"
@@ -54,6 +54,11 @@ func (c tgCall) String() string {
 type shown struct {
 	text string
 	kb   *tgbotapi.InlineKeyboardMarkup
+}
+
+type msgKey struct {
+	chatID int64
+	msgID  int
 }
 
 // fakeTelegram is an in-process Bot API: POST /bot{token}/{method} with
@@ -68,12 +73,11 @@ type fakeTelegram struct {
 	lastUpd  int
 	lastCb   int
 	lastMsg  map[int64]int // per-chat message_id counter
-	shown    map[int64]map[int]shown
+	shown    map[msgKey]shown
 	calls    map[int64][]tgCall
 	consumed map[int64]int
 	blocked  map[int64]bool
 	answers  map[string][]string // every issued cbID has an entry
-	unknown  []string
 }
 
 func newFakeTelegram(t *testing.T) *fakeTelegram {
@@ -81,7 +85,7 @@ func newFakeTelegram(t *testing.T) *fakeTelegram {
 		t:        t,
 		changed:  make(chan struct{}),
 		lastMsg:  make(map[int64]int),
-		shown:    make(map[int64]map[int]shown),
+		shown:    make(map[msgKey]shown),
 		calls:    make(map[int64][]tgCall),
 		consumed: make(map[int64]int),
 		blocked:  make(map[int64]bool),
@@ -113,9 +117,6 @@ func (f *fakeTelegram) serve(w http.ResponseWriter, r *http.Request) {
 	case "answerCallbackQuery":
 		f.answerCallback(w, r)
 	default:
-		f.mu.Lock()
-		f.unknown = append(f.unknown, method)
-		f.mu.Unlock()
 		f.t.Errorf("fake telegram: unexpected method %s %v", method, r.Form)
 		writeJSON(w, http.StatusNotFound, `{"ok":false,"error_code":404,"description":"Not Found"}`)
 	}
@@ -129,6 +130,9 @@ func (f *fakeTelegram) getUpdates(w http.ResponseWriter, r *http.Request) {
 	offset := f.formInt(r, "offset", 0)
 	limit := f.formInt(r, "limit", 100)
 	_, long := r.Form["timeout"]
+	if long == r.Form.Has("limit") { // the poller sends only timeout; the confirming call only limit
+		f.t.Errorf("fake telegram: getUpdates %v: want either timeout or limit", r.Form)
+	}
 	timer := time.NewTimer(pollCap)
 	defer timer.Stop()
 	for {
@@ -165,7 +169,7 @@ func (f *fakeTelegram) sendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	f.lastMsg[c.chatID]++
 	c.msgID = f.lastMsg[c.chatID]
-	f.messagesLocked(c.chatID)[c.msgID] = shown{text: c.text, kb: c.kb}
+	f.shown[msgKey{c.chatID, c.msgID}] = shown{text: c.text, kb: c.kb}
 	f.recordLocked(c)
 	f.mu.Unlock()
 	writeResult(w, message(c.chatID, c.msgID, c.text, c.kb))
@@ -177,8 +181,7 @@ func (f *fakeTelegram) sendMessage(w http.ResponseWriter, r *http.Request) {
 func (f *fakeTelegram) edit(w http.ResponseWriter, r *http.Request, method string) {
 	c := f.parseCall(r, method)
 	f.mu.Lock()
-	msgs := f.messagesLocked(c.chatID)
-	cur, ok := msgs[c.msgID]
+	cur, ok := f.shown[msgKey{c.chatID, c.msgID}]
 	if !ok {
 		f.mu.Unlock()
 		f.t.Errorf("fake telegram: %s of unknown message %d in chat %d", method, c.msgID, c.chatID)
@@ -189,7 +192,7 @@ func (f *fakeTelegram) edit(w http.ResponseWriter, r *http.Request, method strin
 		cur.text = c.text
 	}
 	cur.kb = c.kb
-	msgs[c.msgID] = cur
+	f.shown[msgKey{c.chatID, c.msgID}] = cur
 	f.recordLocked(c)
 	f.mu.Unlock()
 	writeResult(w, message(c.chatID, c.msgID, cur.text, cur.kb))
@@ -242,15 +245,6 @@ func (f *fakeTelegram) formInt(r *http.Request, key string, def int) int {
 		f.t.Errorf("fake telegram: %s=%q: %v", key, s, err)
 	}
 	return n
-}
-
-func (f *fakeTelegram) messagesLocked(chatID int64) map[int]shown {
-	m, ok := f.shown[chatID]
-	if !ok {
-		m = make(map[int]shown)
-		f.shown[chatID] = m
-	}
-	return m
 }
 
 func (f *fakeTelegram) recordLocked(c tgCall) {
@@ -349,9 +343,6 @@ func (f *fakeTelegram) verify() {
 			f.t.Errorf("invariant: chat %d: call never asserted: %s", chatID, c)
 		}
 	}
-	if len(f.unknown) > 0 {
-		f.t.Errorf("invariant: unknown methods called: %q", f.unknown)
-	}
 	if len(f.queue) > 0 {
 		f.t.Errorf("invariant: %d updates never confirmed, first update_id %d", len(f.queue), f.queue[0].UpdateID)
 	}
@@ -376,20 +367,22 @@ func message(chatID int64, msgID int, text string, kb *tgbotapi.InlineKeyboardMa
 	}
 }
 
-func markupString(kb *tgbotapi.InlineKeyboardMarkup) string {
-	rows := make([]string, 0, len(kb.InlineKeyboard))
-	for _, row := range kb.InlineKeyboard {
-		buttons := make([]string, 0, len(row))
+// buttons converts sent markup to the keyboard type the rows expect; nil stays nil.
+func buttons(kb *tgbotapi.InlineKeyboardMarkup) keyboard {
+	if kb == nil {
+		return nil
+	}
+	k := make(keyboard, len(kb.InlineKeyboard))
+	for i, row := range kb.InlineKeyboard {
 		for _, b := range row {
 			data := "<nil>"
 			if b.CallbackData != nil {
 				data = *b.CallbackData
 			}
-			buttons = append(buttons, b.Text+"|"+data)
+			k[i] = append(k[i], button{b.Text, data})
 		}
-		rows = append(rows, "["+strings.Join(buttons, ", ")+"]")
 	}
-	return strings.Join(rows, " ")
+	return k
 }
 
 func writeJSON(w http.ResponseWriter, status int, body string) {
@@ -411,9 +404,8 @@ func writeResult(w http.ResponseWriter, result any) {
 func (f *fakeTelegram) newest(chatID int64, data string) (int, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	msgs := f.shown[chatID]
-	for _, id := range slices.Backward(slices.Sorted(maps.Keys(msgs))) {
-		if hasButton(msgs[id].kb, data) {
+	for id := f.lastMsg[chatID]; id > 0; id-- {
+		if slices.ContainsFunc(slices.Concat(buttons(f.shown[msgKey{chatID, id}].kb)...), func(b button) bool { return b.data == data }) {
 			return id, true
 		}
 	}
@@ -432,7 +424,7 @@ func (f *fakeTelegram) callback(chatID int64, from tgbotapi.User, msgID int, inl
 	if inline {
 		cb.InlineMessageID = "inline-" + id
 	} else {
-		cur := f.shown[chatID][msgID]
+		cur := f.shown[msgKey{chatID, msgID}]
 		cb.Message = message(chatID, msgID, cur.text, cur.kb)
 	}
 	f.enqueueLocked(tgbotapi.Update{CallbackQuery: cb})
@@ -463,18 +455,4 @@ func (f *fakeTelegram) answer(cbID string, wait time.Duration) (string, bool) {
 			return "", false
 		}
 	}
-}
-
-func hasButton(kb *tgbotapi.InlineKeyboardMarkup, data string) bool {
-	if kb == nil {
-		return false
-	}
-	for _, row := range kb.InlineKeyboard {
-		for _, b := range row {
-			if b.CallbackData != nil && *b.CallbackData == data {
-				return true
-			}
-		}
-	}
-	return false
 }

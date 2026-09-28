@@ -23,7 +23,7 @@ func main() {
 	})
 	a, err := app.New(ctx, app.Config{Token: token, StoragePath: os.Getenv("STORAGE_PATH")})
 	if err != nil {
-		log.Fatal(err) // app.New wraps as "storage: …" / "NewBotAPI: …", matching today's log lines
+		log.Fatal(err) // "storage: …" or "NewBotAPI: …"
 	}
 	a.Run(ctx)
 }

@@ -14,7 +14,6 @@ import (
 	"time"
 )
 
-// lcProblem is one catalogue entry of the fake LeetCode.
 type lcProblem struct {
 	id, title, slug, difficulty string
 	tags                        []string
@@ -44,7 +43,6 @@ type fakeLeetCode struct {
 	rotating   bool
 	nDaily     int
 	nList      int
-	nRotated   int
 }
 
 func newFakeLeetCode(t *testing.T) *fakeLeetCode {
@@ -128,8 +126,7 @@ func (f *fakeLeetCode) serveList(w http.ResponseWriter, r *http.Request, req lcR
 	fail, delay, rotating := f.listFails, f.listDelay, f.rotating
 	p, known := catalogue[v.Filters.Difficulty]
 	if rotating {
-		f.nRotated++
-		n := f.nRotated
+		n := f.nList
 		p = lcProblem{
 			id:         strconv.Itoa(1000 + n),
 			title:      fmt.Sprintf("%s %d", p.title, n),
@@ -187,50 +184,20 @@ func writeGraphQL(w http.ResponseWriter, data map[string]any) {
 	_, _ = w.Write(raw)
 }
 
+func (f *fakeLeetCode) locked(fn func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	fn()
+}
+
 // setDaily makes the catalogue problem of difficulty the daily of date.
 func (f *fakeLeetCode) setDaily(date, difficulty string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.date, f.daily = date, catalogue[strings.ToUpper(difficulty)]
+	f.locked(func() { f.date, f.daily = date, catalogue[strings.ToUpper(difficulty)] })
 }
 
-// failDaily makes daily queries answer 500.
-func (f *fakeLeetCode) failDaily(fail bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.dailyFails = fail
-}
-
-// failList makes list queries answer 500.
-func (f *fakeLeetCode) failList(fail bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.listFails = fail
-}
-
-// setListDelay delays every list response by d.
-func (f *fakeLeetCode) setListDelay(d time.Duration) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.listDelay = d
-}
-
-// setRotating makes every list response return a new free problem of the
-// requested level, whatever skip is.
-func (f *fakeLeetCode) setRotating(on bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.rotating = on
-}
-
-func (f *fakeLeetCode) dailyCalls() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.nDaily
-}
-
-func (f *fakeLeetCode) listCalls() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.nList
-}
+func (f *fakeLeetCode) failDaily(on bool)            { f.locked(func() { f.dailyFails = on }) } // 500s
+func (f *fakeLeetCode) failList(on bool)             { f.locked(func() { f.listFails = on }) }  // 500s
+func (f *fakeLeetCode) setListDelay(d time.Duration) { f.locked(func() { f.listDelay = d }) }
+func (f *fakeLeetCode) setRotating(on bool)          { f.locked(func() { f.rotating = on }) } // a new problem per draw, whatever skip is
+func (f *fakeLeetCode) dailyCalls() (n int)          { f.locked(func() { n = f.nDaily }); return n }
+func (f *fakeLeetCode) listCalls() (n int)           { f.locked(func() { n = f.nList }); return n }

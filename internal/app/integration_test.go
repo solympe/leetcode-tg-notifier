@@ -664,6 +664,19 @@ func TestIntegration(t *testing.T) {
 				e.storedEq(2101, legacyChat{ChatID: 2101, NotifyTime: "09:00", Timezone: "Mars/Base"})
 			},
 		},
+		{
+			// Shutdown step 4 comes before step 5: a job that runs while Run
+			// stops the scheduler still has a live jobs root, whatever the
+			// signal ctx.
+			name: "22 a job running at shutdown still sends",
+			seed: `{"chats":{"2200":{"chat_id":2200,"notify_time":"09:00","timezone":"UTC","members":null}}}`,
+			run: func(e *env) {
+				e.sync()
+				e.sched.onStop = func() { e.fire(2200) }
+				e.stop()
+				e.sent(2200, dailyText, doneKB)
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -709,9 +722,8 @@ func TestNewFails(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			a, err := New(ctx, tt.cfg(newFakeTelegram(t), t.TempDir()))
+			_, err := New(ctx, tt.cfg(newFakeTelegram(t), t.TempDir()))
 			if err == nil {
-				a.sched.Stop()
 				t.Fatal("New: got nil error")
 			}
 			if !strings.HasPrefix(err.Error(), tt.wantPrefix) {

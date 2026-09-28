@@ -28,7 +28,7 @@ type Config struct {
 
 const (
 	telegramTimeout = 75 * time.Second // long poll is 60s
-	pollTimeout     = 60               // seconds, as today
+	pollTimeout     = 60               // seconds
 	updateTimeout   = 2 * time.Minute  // per-update budget
 )
 
@@ -47,13 +47,11 @@ type application struct {
 	api        *tgbotapi.BotAPI // concrete third-party type: GetUpdatesChan, StopReceivingUpdates, GetUpdates
 	sched      jobRunner
 	bot        updateHandler
-	cancelJobs context.CancelFunc // cancels the jobs root: the parent of every scheduled job's ctx
+	cancelJobs context.CancelFunc // cancels the jobs root
 }
 
 // New builds the object graph and restores every stored schedule. It calls
-// getMe, so it fails on a bad token or an unreachable Telegram endpoint. ctx
-// bounds the restore; the jobs root is detached from it and cancelled when
-// Run returns.
+// getMe, so it fails on a bad token or an unreachable Telegram endpoint.
 func New(ctx context.Context, cfg Config) (*application, error) {
 	store, err := storage.NewJSONStorage(cmp.Or(cfg.StoragePath, "config.json"))
 	if err != nil {
@@ -70,7 +68,7 @@ func New(ctx context.Context, cfg Config) (*application, error) {
 	sched := scheduler.New()
 	svc := notifier.New(jobs, store, leetcode.NewHTTPClient(cfg.LeetCodeEndpoint, nil), sched, telegram.NewSender(api), time.Now)
 	if err := svc.Restore(ctx); err != nil {
-		log.Print(err) // never fatal, as before
+		log.Print(err) // never fatal
 	}
 	return &application{
 		api:        api,
@@ -80,21 +78,20 @@ func New(ctx context.Context, cfg Config) (*application, error) {
 	}, nil
 }
 
-// Run handles updates one at a time until ctx is done, then shuts down
-// gracefully: it drains every update already received, confirms the last
-// batch, waits for running jobs and cancels the jobs root. Call it once per
-// application.
+// Run handles updates one at a time until ctx is done, then shuts down in
+// the numbered steps below. Call it once per application.
 func (a *application) Run(ctx context.Context) {
 	defer a.cancelJobs() // 5. backstop: no job context outlives Run
 	a.sched.Start()
 	defer a.sched.Stop() // 4. no new firings; waits for running jobs
 	updates := a.api.GetUpdatesChan(tgbotapi.UpdateConfig{Timeout: pollTimeout})
-	stop := context.AfterFunc(ctx, a.api.StopReceivingUpdates) // 1. exactly once (a second call panics)
-	defer stop()
-	base := context.WithoutCancel(ctx) // started work must survive SIGTERM
+	context.AfterFunc(ctx, a.api.StopReceivingUpdates) // 1. exactly once (a second call panics)
+	base := context.WithoutCancel(ctx)                 // started work must survive SIGTERM
 	last := 0
 	for u := range updates { // 2. drains buffered updates and the last in-flight poll
-		a.handle(base, u)
+		uctx, cancel := context.WithTimeout(base, updateTimeout)
+		a.bot.Handle(uctx, u) // recovers panics, so cancel always runs
+		cancel()
 		last = u.UpdateID
 	}
 	if last > 0 { // 3. confirm the final batch so the next start does not redeliver it
@@ -102,10 +99,4 @@ func (a *application) Run(ctx context.Context) {
 			log.Printf("confirm updates: %v", err)
 		}
 	}
-}
-
-func (a *application) handle(base context.Context, u tgbotapi.Update) {
-	ctx, cancel := context.WithTimeout(base, updateTimeout)
-	defer cancel()
-	a.bot.Handle(ctx, u)
 }
