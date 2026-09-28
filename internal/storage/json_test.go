@@ -1,9 +1,11 @@
 package storage
 
 import (
+	"cmp"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -308,11 +310,17 @@ func TestUpdate(t *testing.T) {
 }
 
 func TestLoadLegacyConfig(t *testing.T) {
+	// legacy_config.json was written by this jsonStorage before the
+	// refactor and is never regenerated: every later version must load it.
+	golden, err := os.ReadFile(filepath.Join("testdata", "legacy_config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	tests := []struct {
-		name   string
-		raw    string
-		chatID int64
-		want   ChatConfig
+		name string
+		raw  string
+		want []ChatConfig // sorted by ChatID
 	}{
 		{
 			name: "config without difficulty fields",
@@ -328,19 +336,50 @@ func TestLoadLegacyConfig(t *testing.T) {
     }
   }
 }`,
-			chatID: 123,
-			want: ChatConfig{
+			want: []ChatConfig{{
 				ChatID:     123,
 				NotifyTime: "09:00",
 				Timezone:   "Asia/Tbilisi",
 				Members:    map[string]UserStat{"7": {Name: "Alice", Count: 5, LastSolvedDate: "2026-09-20"}},
-			},
+			}},
 		},
 		{
-			name:   "config without members",
-			raw:    `{"chats":{"5":{"chat_id":5,"notify_time":"21:15","timezone":"UTC"}}}`,
-			chatID: 5,
-			want:   ChatConfig{ChatID: 5, NotifyTime: "21:15", Timezone: "UTC"},
+			name: "config without members",
+			raw:  `{"chats":{"5":{"chat_id":5,"notify_time":"21:15","timezone":"UTC"}}}`,
+			want: []ChatConfig{{ChatID: 5, NotifyTime: "21:15", Timezone: "UTC"}},
+		},
+		{
+			name: "golden file written by the pre-refactor storage",
+			raw:  string(golden),
+			want: []ChatConfig{
+				{
+					ChatID:     -1001234567890,
+					NotifyTime: "07:00",
+					Timezone:   "America/New_York",
+					Members: map[string]UserStat{
+						"7": {Name: "Alice", Count: 1, LastSolvedDate: "2026-09-26"},
+						"8": {Name: "@bob", Count: 4, LastSolvedDate: "2026-09-27"},
+					},
+					Difficulties: []string{"Medium", "Hard"},
+				},
+				{
+					ChatID:       100,
+					NotifyTime:   "09:00",
+					Timezone:     "Europe/Moscow",
+					Members:      map[string]UserStat{"7": {Name: "Alice", Count: 5, LastSolvedDate: "2026-09-27"}},
+					Difficulties: []string{"Easy"},
+					DailyPick: &DailyPick{
+						Date:            "2026-09-28",
+						DailyDifficulty: "Hard",
+						ID:              "1",
+						Title:           "Two Sum",
+						Link:            "/problems/two-sum/",
+						Difficulty:      "Easy",
+						Tags:            []string{"Array", "Hash Table"},
+					},
+				},
+				{ChatID: 200, NotifyTime: "21:15", Timezone: "Asia/Tbilisi"},
+			},
 		},
 	}
 
@@ -355,18 +394,12 @@ func TestLoadLegacyConfig(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, ok := s.Get(tt.chatID)
-			if !ok {
-				t.Fatal("legacy config should load")
-			}
-			if got.Difficulties != nil {
-				t.Errorf("Difficulties: got %v, want nil", got.Difficulties)
-			}
-			if got.DailyPick != nil {
-				t.Errorf("DailyPick: got %+v, want nil", got.DailyPick)
-			}
+			got := s.All()
+			slices.SortFunc(got, func(a, b ChatConfig) int { return cmp.Compare(a.ChatID, b.ChatID) })
+			// DeepEqual tells nil from empty, so absent members, difficulties
+			// and pick must load as nil.
 			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("loaded config:\n got %+v\nwant %+v", got, tt.want)
+				t.Errorf("loaded configs:\n got %+v\nwant %+v", got, tt.want)
 			}
 		})
 	}

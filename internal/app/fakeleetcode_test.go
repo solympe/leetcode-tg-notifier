@@ -186,3 +186,51 @@ func writeGraphQL(w http.ResponseWriter, data map[string]any) {
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(raw)
 }
+
+// setDaily makes the catalogue problem of difficulty the daily of date.
+func (f *fakeLeetCode) setDaily(date, difficulty string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.date, f.daily = date, catalogue[strings.ToUpper(difficulty)]
+}
+
+// failDaily makes daily queries answer 500.
+func (f *fakeLeetCode) failDaily(fail bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.dailyFails = fail
+}
+
+// failList makes list queries answer 500.
+func (f *fakeLeetCode) failList(fail bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listFails = fail
+}
+
+// setListDelay delays every list response by d.
+func (f *fakeLeetCode) setListDelay(d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listDelay = d
+}
+
+// setRotating makes every list response return a new free problem of the
+// requested level, whatever skip is.
+func (f *fakeLeetCode) setRotating(on bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rotating = on
+}
+
+func (f *fakeLeetCode) dailyCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.nDaily
+}
+
+func (f *fakeLeetCode) listCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.nList
+}

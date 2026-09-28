@@ -66,6 +66,7 @@ type fakeTelegram struct {
 	changed  chan struct{} // closed and replaced on every state change
 	queue    []tgbotapi.Update
 	lastUpd  int
+	lastCb   int
 	lastMsg  map[int64]int // per-chat message_id counter
 	shown    map[int64]map[int]shown
 	calls    map[int64][]tgCall
@@ -403,4 +404,77 @@ func writeResult(w http.ResponseWriter, result any) {
 		panic(err)
 	}
 	writeJSON(w, http.StatusOK, `{"ok":true,"result":`+string(raw)+`}`)
+}
+
+// newest returns the newest bot message in the chat whose current keyboard
+// has a button with that callback data.
+func (f *fakeTelegram) newest(chatID int64, data string) (int, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	msgs := f.shown[chatID]
+	for _, id := range slices.Backward(slices.Sorted(maps.Keys(msgs))) {
+		if hasButton(msgs[id].kb, data) {
+			return id, true
+		}
+	}
+	return 0, false
+}
+
+// callback enqueues a button press on message msgID of the chat, or an
+// inline one (Message == nil) when inline is true, and returns its ID.
+func (f *fakeTelegram) callback(chatID int64, from tgbotapi.User, msgID int, inline bool, data string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastCb++
+	id := "cb" + strconv.Itoa(f.lastCb)
+	f.answers[id] = nil
+	cb := &tgbotapi.CallbackQuery{ID: id, From: &from, ChatInstance: "instance", Data: data}
+	if inline {
+		cb.InlineMessageID = "inline-" + id
+	} else {
+		cur := f.shown[chatID][msgID]
+		cb.Message = message(chatID, msgID, cur.text, cur.kb)
+	}
+	f.enqueueLocked(tgbotapi.Update{CallbackQuery: cb})
+	return id
+}
+
+func (f *fakeTelegram) block(chatID int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.blocked[chatID] = true
+}
+
+// answer returns the first answer to cbID, waiting up to wait for it.
+func (f *fakeTelegram) answer(cbID string, wait time.Duration) (string, bool) {
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	for {
+		f.mu.Lock()
+		if got := f.answers[cbID]; len(got) > 0 {
+			f.mu.Unlock()
+			return got[0], true
+		}
+		ch := f.changed
+		f.mu.Unlock()
+		select {
+		case <-ch:
+		case <-timer.C:
+			return "", false
+		}
+	}
+}
+
+func hasButton(kb *tgbotapi.InlineKeyboardMarkup, data string) bool {
+	if kb == nil {
+		return false
+	}
+	for _, row := range kb.InlineKeyboard {
+		for _, b := range row {
+			if b.CallbackData != nil && *b.CallbackData == data {
+				return true
+			}
+		}
+	}
+	return false
 }

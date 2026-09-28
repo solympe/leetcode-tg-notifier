@@ -4,7 +4,13 @@ package app
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"io/fs"
+	"os"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -18,7 +24,10 @@ const (
 	waitFor   = 5 * time.Second // the longest any expectation waits
 )
 
-var alice = tgbotapi.User{ID: 7, FirstName: "Alice"}
+var (
+	alice = tgbotapi.User{ID: 7, FirstName: "Alice"}
+	bob   = tgbotapi.User{ID: 8, UserName: "bob"} // no first name: shown as @bob
+)
 
 // button is an expected inline button; an empty text matches any label.
 type button struct{ text, data string }
@@ -160,4 +169,211 @@ func (e *env) expectQuiet(chatID int64) {
 	for _, c := range e.tg.pending(chatID) {
 		e.t.Errorf("chat %d: unexpected %s", chatID, c)
 	}
+}
+
+// legacyFile, legacyChat, legacyStat and legacyPick copy today's
+// storage.ChatConfig, UserStat and DailyPick tags verbatim, so stored() reads
+// config.json exactly as the pre-refactor binary does.
+type legacyFile struct {
+	Chats map[string]legacyChat `json:"chats"`
+}
+
+type legacyStat struct {
+	Name           string `json:"name"`
+	Count          int    `json:"count"`
+	LastSolvedDate string `json:"last_solved_date"`
+}
+
+type legacyPick struct {
+	Date            string   `json:"date"`
+	DailyDifficulty string   `json:"daily_difficulty"`
+	ID              string   `json:"id"`
+	Title           string   `json:"title"`
+	Link            string   `json:"link"`
+	Difficulty      string   `json:"difficulty"`
+	Tags            []string `json:"tags"`
+}
+
+type legacyChat struct {
+	ChatID       int64                 `json:"chat_id"`
+	NotifyTime   string                `json:"notify_time"`
+	Timezone     string                `json:"timezone"`
+	Members      map[string]legacyStat `json:"members"`
+	Difficulties []string              `json:"difficulties,omitempty"`
+	DailyPick    *legacyPick           `json:"daily_pick,omitempty"`
+}
+
+// stop cancels the app's ctx and waits for Run to return.
+func (e *env) stop() {
+	e.t.Helper()
+	e.halt()
+}
+
+// restart stops the app after every update so far is handled and starts a
+// new one on the same dir and fakes.
+func (e *env) restart() {
+	e.t.Helper()
+	e.sync()
+	e.stop()
+	e.start()
+}
+
+// seed writes config.json before start.
+func (e *env) seed(raw string) {
+	e.t.Helper()
+	if err := os.WriteFile(filepath.Join(e.dir, "config.json"), []byte(raw), 0o644); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+// stored decodes the chat from config.json on disk with the legacy structs.
+func (e *env) stored(chatID int64) (legacyChat, bool) {
+	e.t.Helper()
+	raw, err := os.ReadFile(filepath.Join(e.dir, "config.json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return legacyChat{}, false
+	}
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	var f legacyFile
+	if err := json.Unmarshal(raw, &f); err != nil {
+		e.t.Fatalf("config.json: %v\n%s", err, raw)
+	}
+	c, ok := f.Chats[strconv.FormatInt(chatID, 10)]
+	return c, ok
+}
+
+// storedEq asserts that config.json holds exactly want for the chat.
+func (e *env) storedEq(chatID int64, want legacyChat) {
+	e.t.Helper()
+	got, ok := e.stored(chatID)
+	if !ok {
+		e.t.Errorf("chat %d: not in config.json, want %s", chatID, asJSON(want))
+		return
+	}
+	if !reflect.DeepEqual(got, want) {
+		e.t.Errorf("chat %d in config.json:\n got %s\nwant %s", chatID, asJSON(got), asJSON(want))
+	}
+}
+
+// notStored asserts that config.json has no entry for the chat.
+func (e *env) notStored(chatID int64) {
+	e.t.Helper()
+	if got, ok := e.stored(chatID); ok {
+		e.t.Errorf("chat %d: still in config.json: %s", chatID, asJSON(got))
+	}
+}
+
+// fire runs the chat's cron entry now, synchronously, exactly as cron would
+// (Recover included); false means nothing is scheduled.
+func (e *env) fire(chatID int64) bool {
+	return e.a.sched.RunNow(chatID)
+}
+
+// scheduledAt asserts that the chat's next firing is at hhmm in zone, within 24h.
+func (e *env) scheduledAt(chatID int64, hhmm, zone string) {
+	e.t.Helper()
+	loc, err := time.LoadLocation(zone)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	next, ok := e.a.sched.Next(chatID)
+	if !ok {
+		e.t.Errorf("chat %d: not scheduled, want %s %s", chatID, hhmm, zone)
+		return
+	}
+	if got := next.In(loc).Format("15:04"); got != hhmm {
+		e.t.Errorf("chat %d: next firing at %s %s, want %s", chatID, got, zone, hhmm)
+	}
+	if d := time.Until(next); d <= 0 || d > 24*time.Hour {
+		e.t.Errorf("chat %d: next firing %v away, want within 24h", chatID, d)
+	}
+}
+
+func (e *env) notScheduled(chatID int64) {
+	e.t.Helper()
+	if next, ok := e.a.sched.Next(chatID); ok {
+		e.t.Errorf("chat %d: still scheduled at %v", chatID, next)
+	}
+}
+
+// press presses the button with data on the newest bot message showing it.
+func (e *env) press(chatID int64, from tgbotapi.User, data string) string {
+	e.t.Helper()
+	msgID, ok := e.tg.newest(chatID, data)
+	if !ok {
+		e.t.Fatalf("chat %d: no message shows a %q button\n%s", chatID, data, e.tg.transcript(chatID))
+	}
+	return e.tg.callback(chatID, from, msgID, false, data)
+}
+
+// pressOn presses data on message msgID whatever its keyboard shows: stale
+// and forged buttons.
+func (e *env) pressOn(chatID int64, from tgbotapi.User, msgID int, data string) string {
+	return e.tg.callback(chatID, from, msgID, false, data)
+}
+
+// pressInline presses a button whose callback has no Message.
+func (e *env) pressInline(from tgbotapi.User, data string) string {
+	return e.tg.callback(0, from, 0, true, data)
+}
+
+// block makes later sendMessage calls to the chat fail with 403.
+func (e *env) block(chatID int64) {
+	e.tg.block(chatID)
+}
+
+// edited expects an editMessageText of msgID; a nil kb means the keyboard is removed.
+func (e *env) edited(chatID int64, msgID int, text string, kb keyboard) {
+	e.t.Helper()
+	c := e.expectMessage(chatID)
+	if c.method != "editMessageText" || c.msgID != msgID || c.text != text || !kb.matches(c.kb) {
+		e.t.Fatalf("chat %d:\n got %s\nwant editMessageText msg=%d text=%q kb=%s\n%s", chatID, c, msgID, text, kb, e.tg.transcript(chatID))
+	}
+}
+
+// rekeyed expects an editMessageReplyMarkup of msgID.
+func (e *env) rekeyed(chatID int64, msgID int, kb keyboard) {
+	e.t.Helper()
+	c := e.expectMessage(chatID)
+	if c.method != "editMessageReplyMarkup" || c.msgID != msgID || !kb.matches(c.kb) {
+		e.t.Fatalf("chat %d:\n got %s\nwant editMessageReplyMarkup msg=%d kb=%s\n%s", chatID, c, msgID, kb, e.tg.transcript(chatID))
+	}
+}
+
+// blockedAttempt expects a sendMessage that got 403 and returns its text.
+func (e *env) blockedAttempt(chatID int64) string {
+	e.t.Helper()
+	c := e.expectMessage(chatID)
+	if c.method != "sendMessage" || !c.blocked {
+		e.t.Fatalf("chat %d:\n got %s\nwant a sendMessage rejected with 403\n%s", chatID, c, e.tg.transcript(chatID))
+	}
+	return c.text
+}
+
+// expectAnswer returns the answer to callback cbID.
+func (e *env) expectAnswer(cbID string) string {
+	e.t.Helper()
+	text, ok := e.tg.answer(cbID, waitFor)
+	if !ok {
+		e.t.Fatalf("callback %s: not answered within %v", cbID, waitFor)
+	}
+	return text
+}
+
+// answered asserts the answer to callback cbID.
+func (e *env) answered(cbID, want string) {
+	e.t.Helper()
+	if got := e.expectAnswer(cbID); got != want {
+		e.t.Errorf("callback %s answered %q, want %q", cbID, got, want)
+	}
+}
+
+func asJSON(v any) string {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return err.Error()
+	}
+	return string(raw)
 }

@@ -1,0 +1,58 @@
+{
+  "chats": {
+    "-1001234567890": {
+      "chat_id": -1001234567890,
+      "notify_time": "07:00",
+      "timezone": "America/New_York",
+      "members": {
+        "7": {
+          "name": "Alice",
+          "count": 1,
+          "last_solved_date": "2026-09-26"
+        },
+        "8": {
+          "name": "@bob",
+          "count": 4,
+          "last_solved_date": "2026-09-27"
+        }
+      },
+      "difficulties": [
+        "Medium",
+        "Hard"
+      ]
+    },
+    "100": {
+      "chat_id": 100,
+      "notify_time": "09:00",
+      "timezone": "Europe/Moscow",
+      "members": {
+        "7": {
+          "name": "Alice",
+          "count": 5,
+          "last_solved_date": "2026-09-27"
+        }
+      },
+      "difficulties": [
+        "Easy"
+      ],
+      "daily_pick": {
+        "date": "2026-09-28",
+        "daily_difficulty": "Hard",
+        "id": "1",
+        "title": "Two Sum",
+        "link": "/problems/two-sum/",
+        "difficulty": "Easy",
+        "tags": [
+          "Array",
+          "Hash Table"
+        ]
+      }
+    },
+    "200": {
+      "chat_id": 200,
+      "notify_time": "21:15",
+      "timezone": "Asia/Tbilisi",
+      "members": null
+    }
+  }
+}
