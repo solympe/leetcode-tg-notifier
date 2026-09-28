@@ -25,10 +25,9 @@ type session struct {
 	step                 step
 	msgID                int // the one message whose buttons are live
 	notifyTime, timezone string
-	selected             []string // canonical order
+	selected             []string // canonical order; replaced, never modified in place
 }
 
-// onDifficulty reports whether msgID is the difficulty keyboard of the session.
 func (s session) onDifficulty(msgID int) bool {
 	return (s.step == stepSetupDifficulty || s.step == stepEditDifficulty) && s.msgID == msgID
 }
@@ -39,19 +38,16 @@ type sessions struct {
 	m  map[int64]session
 }
 
-// get returns a copy of chatID's session; the zero step means none.
+// get returns chatID's session; the zero step means none.
 func (ss *sessions) get(chatID int64) session {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
-	s := ss.m[chatID]
-	s.selected = slices.Clone(s.selected)
-	return s
+	return ss.m[chatID]
 }
 
 func (ss *sessions) set(chatID int64, s session) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
-	s.selected = slices.Clone(s.selected)
 	ss.m[chatID] = s
 }
 
@@ -95,8 +91,6 @@ func (h *handler) startDifficulty(ctx context.Context, chatID int64) {
 	h.sessions.set(chatID, session{step: stepEditDifficulty, msgID: msgID, selected: selected})
 }
 
-// onText handles typed text in the time and timezone steps; other text is
-// ignored.
 func (h *handler) onText(ctx context.Context, chatID int64, text string) {
 	s := h.sessions.get(chatID)
 	switch {
@@ -111,20 +105,13 @@ func (h *handler) onText(ctx context.Context, chatID int64, text string) {
 	}
 }
 
-func (h *handler) timeButton(ctx context.Context, chatID int64, msgID int, t string) (string, func()) {
+// stepButton accepts a valid choice pressed on the prompt of step want.
+func (h *handler) stepButton(chatID int64, msgID int, want step, valid bool, next func(session)) (string, func()) {
 	s := h.sessions.get(chatID)
-	if s.step != stepTime || s.msgID != msgID || !validTime(t) {
+	if s.step != want || s.msgID != msgID || !valid {
 		return msgMenuExpired, nil
 	}
-	return "", func() { h.chooseTime(ctx, chatID, s, t) }
-}
-
-func (h *handler) tzButton(ctx context.Context, chatID int64, msgID int, zone string) (string, func()) {
-	s := h.sessions.get(chatID)
-	if s.step != stepTimezone || s.msgID != msgID || !validTimezone(zone) {
-		return msgMenuExpired, nil
-	}
-	return "", func() { h.chooseTimezone(ctx, chatID, s, zone) }
+	return "", func() { next(s) }
 }
 
 func (h *handler) diffButton(ctx context.Context, chatID int64, msgID int, d string) (string, func()) {
@@ -160,7 +147,6 @@ func (h *handler) saveButton(ctx context.Context, chatID int64, msgID int) (stri
 	}
 }
 
-// chooseTime records the time and turns the prompt into the timezone step.
 func (h *handler) chooseTime(ctx context.Context, chatID int64, s session, t string) {
 	s.step, s.notifyTime = stepTimezone, t
 	h.sessions.set(chatID, s)
@@ -182,7 +168,7 @@ func (h *handler) chooseTimezone(ctx context.Context, chatID int64, s session, z
 }
 
 // finishSetup saves and schedules the subscription. A failed save is logged
-// and the user still sees All set, as before the refactor.
+// and the user still sees All set.
 func (h *handler) finishSetup(ctx context.Context, chatID int64, s session) {
 	if err := h.svc.Subscribe(ctx, chatID, s.notifyTime, s.timezone, s.selected); err != nil {
 		log.Printf("subscribe %d: %v", chatID, err)

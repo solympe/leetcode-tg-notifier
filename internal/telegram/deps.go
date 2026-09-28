@@ -1,6 +1,5 @@
-// Package telegram is the Bot API adapter: it routes updates, runs the
-// /setup and /difficulty dialogs, renders texts and keyboards and sends
-// messages. Apart from app, it is the only package that imports tgbotapi.
+// Package telegram is the Bot API adapter: routing, the /setup and
+// /difficulty dialogs, texts, keyboards and sending.
 package telegram
 
 //go:generate mockgen -source=deps.go -destination=mocks/mock_deps.go -package=mocks
@@ -13,15 +12,13 @@ import (
 	"github.com/solympe/leetcode-tg-notifier/internal/domain"
 )
 
-// botAPI is the part of the Bot API the adapter calls. *tgbotapi.BotAPI
-// satisfies it; tgbotapi v5.5.1 has no ctx API.
+// botAPI is satisfied by *tgbotapi.BotAPI, which has no ctx API in v5.5.1.
 type botAPI interface {
 	Send(c tgbotapi.Chattable) (tgbotapi.Message, error)
 	Request(c tgbotapi.Chattable) (*tgbotapi.APIResponse, error)
 }
 
-// service is the use-case core the handler drives, in domain types only.
-// notifier's *service satisfies it.
+// service is the use-case core; notifier's *service satisfies it.
 type service interface {
 	Subscribe(ctx context.Context, chatID int64, notifyTime, timezone string, difficulties []string) error
 	SetDifficulties(ctx context.Context, chatID int64, difficulties []string) error

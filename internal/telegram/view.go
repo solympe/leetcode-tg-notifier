@@ -35,8 +35,7 @@ const (
 	parseMode = "HTML"
 )
 
-// User-visible texts, byte for byte as in the old internal/bot/const.go and
-// commands.go.
+// User-visible texts.
 const (
 	msgWelcome           = "Hi! I'm <b>%s</b>. I help you subscribe to a daily LeetCode challenge newsletter and get the problem of the day anytime.\n\nCommands:\n• /setup — create your daily subscription\n• /difficulty — choose problem difficulty\n• /today — get today's problem (your difficulty)\n• /daily — get the official LeetCode daily (any difficulty)\n• /rating — show solve leaderboard\n• /status — check your subscription status\n• /about — learn more about this bot"
 	msgAbout             = "For questions, suggestions, and bug reports — DM @solympe"
@@ -73,19 +72,9 @@ func keyboard(rows ...[]tgbotapi.InlineKeyboardButton) *tgbotapi.InlineKeyboardM
 
 func startKeyboard() *tgbotapi.InlineKeyboardMarkup {
 	return keyboard(
-		tgbotapi.NewInlineKeyboardRow(
-			btn("📅 Today's problem", cmdToday),
-			btn("🗓 LeetCode daily", cmdDaily),
-			btn("⚙️ Setup", cmdSetup),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			btn("ℹ️ Status", cmdStatus),
-			btn("🏆 Rating", cmdRating),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			btn("🎚 Difficulty", cmdDifficulty),
-			btn("🛑 Unsubscribe", cmdUnsubscribe),
-		),
+		tgbotapi.NewInlineKeyboardRow(btn("📅 Today's problem", cmdToday), btn("🗓 LeetCode daily", cmdDaily), btn("⚙️ Setup", cmdSetup)),
+		tgbotapi.NewInlineKeyboardRow(btn("ℹ️ Status", cmdStatus), btn("🏆 Rating", cmdRating)),
+		tgbotapi.NewInlineKeyboardRow(btn("🎚 Difficulty", cmdDifficulty), btn("🛑 Unsubscribe", cmdUnsubscribe)),
 	)
 }
 
@@ -94,19 +83,12 @@ func doneKeyboard() *tgbotapi.InlineKeyboardMarkup {
 }
 
 func timeKeyboard() *tgbotapi.InlineKeyboardMarkup {
+	at := func(hhmm string) tgbotapi.InlineKeyboardButton {
+		return btn(strings.TrimPrefix(hhmm, "0"), cbPrefixTime+hhmm)
+	}
 	return keyboard(
-		tgbotapi.NewInlineKeyboardRow(
-			btn("7:00", cbPrefixTime+"07:00"),
-			btn("8:00", cbPrefixTime+"08:00"),
-			btn("9:00", cbPrefixTime+"09:00"),
-			btn("10:00", cbPrefixTime+"10:00"),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			btn("18:00", cbPrefixTime+"18:00"),
-			btn("19:00", cbPrefixTime+"19:00"),
-			btn("20:00", cbPrefixTime+"20:00"),
-			btn("21:00", cbPrefixTime+"21:00"),
-		),
+		tgbotapi.NewInlineKeyboardRow(at("07:00"), at("08:00"), at("09:00"), at("10:00")),
+		tgbotapi.NewInlineKeyboardRow(at("18:00"), at("19:00"), at("20:00"), at("21:00")),
 	)
 }
 
@@ -133,6 +115,7 @@ func tzLabel(city, zone string) string {
 	}
 	_, offset := time.Now().In(loc).Zone()
 	h, m := offset/3600, (offset%3600)/60
+	m = max(m, -m) // "UTC-9:30", not "UTC-9:-30"
 	sign := "+"
 	if h < 0 {
 		sign = ""
@@ -143,8 +126,6 @@ func tzLabel(city, zone string) string {
 	return fmt.Sprintf("UTC%s%d:%02d %s", sign, h, m, city)
 }
 
-// difficultyKeyboard shows a toggle per difficulty, ticked when in selected,
-// and a Save button.
 func difficultyKeyboard(selected []string) *tgbotapi.InlineKeyboardMarkup {
 	var toggles []tgbotapi.InlineKeyboardButton
 	for _, d := range domain.Difficulties() {
@@ -169,8 +150,6 @@ func formatPick(p domain.Pick) string {
 	)
 }
 
-// formatDate renders a "2006-01-02" date as "January 2, 2006", falling back
-// to the raw string when it does not parse.
 func formatDate(date string) string {
 	if t, err := time.Parse(time.DateOnly, date); err == nil {
 		return t.Format("January 2, 2006")
@@ -227,8 +206,7 @@ func validTimezone(s string) bool {
 	return err == nil
 }
 
-// canonical returns the known difficulties in ds, in canonical order, as a
-// new slice.
+// canonical returns the known difficulties in ds, in canonical order.
 func canonical(ds []string) []string {
 	return slices.DeleteFunc(domain.Difficulties(), func(d string) bool { return !slices.Contains(ds, d) })
 }

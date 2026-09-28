@@ -39,8 +39,6 @@ func (s *sender) SendFetchFailed(ctx context.Context, chatID int64) error {
 	return err
 }
 
-// send sends an HTML message, with kb when it is not nil, and returns the
-// sent message's ID.
 func (s *sender) send(ctx context.Context, chatID int64, text string, kb *tgbotapi.InlineKeyboardMarkup) (int, error) {
 	msg := tgbotapi.NewMessage(chatID, text)
 	msg.ParseMode = parseMode
@@ -68,7 +66,6 @@ func (s *sender) edit(ctx context.Context, chatID int64, msgID int, text string,
 	}
 }
 
-// editKeyboard replaces message msgID's keyboard and keeps its text.
 func (s *sender) editKeyboard(ctx context.Context, chatID int64, msgID int, kb *tgbotapi.InlineKeyboardMarkup) {
 	if _, err := s.call(ctx, tgbotapi.NewEditMessageReplyMarkup(chatID, msgID, *kb)); err != nil {
 		log.Printf("edit keyboard %d in %d: %v", msgID, chatID, err)
@@ -93,8 +90,7 @@ func (s *sender) call(ctx context.Context, c tgbotapi.Chattable) (tgbotapi.Messa
 	return s.api.Send(c)
 }
 
-// isBotBlocked reports whether err is the Bot API's 403 Forbidden, which it
-// returns when the chat blocked the bot.
+// isBotBlocked reports the Bot API's 403, returned when the chat blocked the bot.
 func isBotBlocked(err error) bool {
 	var tgErr *tgbotapi.Error
 	return errors.As(err, &tgErr) && tgErr.Code == http.StatusForbidden

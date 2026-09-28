@@ -27,7 +27,7 @@ type handler struct {
 	svc      service
 	botName  string
 	sessions sessions
-	commands map[string]command // a field, not a package var, which avoids an init cycle
+	commands map[string]command // built in NewHandler: the entries are bound to h and svc
 }
 
 func NewHandler(api botAPI, svc service, botName string) *handler {
@@ -94,9 +94,8 @@ func (h *handler) onCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 	}
 }
 
-// button validates a press on message msgID and returns its toast and the
-// action to run after the answer, if any. Only done has a side effect here:
-// its toast reports the count.
+// button returns a press's toast and the action to run after the answer.
+// Only done acts before answering: its toast reports the count.
 func (h *handler) button(ctx context.Context, chatID int64, msgID int, from *tgbotapi.User, data string) (string, func()) {
 	if c, ok := h.commands[data]; ok && c.inMenu {
 		return "", func() { c.run(ctx, chatID) }
@@ -108,10 +107,10 @@ func (h *handler) button(ctx context.Context, chatID int64, msgID int, from *tgb
 		return h.saveButton(ctx, chatID, msgID)
 	}
 	if t, ok := strings.CutPrefix(data, cbPrefixTime); ok {
-		return h.timeButton(ctx, chatID, msgID, t)
+		return h.stepButton(chatID, msgID, stepTime, validTime(t), func(s session) { h.chooseTime(ctx, chatID, s, t) })
 	}
 	if zone, ok := strings.CutPrefix(data, cbPrefixTz); ok {
-		return h.tzButton(ctx, chatID, msgID, zone)
+		return h.stepButton(chatID, msgID, stepTimezone, validTimezone(zone), func(s session) { h.chooseTimezone(ctx, chatID, s, zone) })
 	}
 	if d, ok := strings.CutPrefix(data, cbPrefixDiff); ok {
 		return h.diffButton(ctx, chatID, msgID, d)
@@ -119,7 +118,6 @@ func (h *handler) button(ctx context.Context, chatID int64, msgID int, from *tgb
 	return msgMenuExpired, nil
 }
 
-// done counts the presser's solve for today and returns the toast.
 func (h *handler) done(ctx context.Context, chatID int64, from *tgbotapi.User) string {
 	name := from.FirstName
 	if name == "" {
@@ -162,16 +160,14 @@ func (h *handler) status(ctx context.Context, chatID int64) {
 	}
 }
 
+// rating needs no subscribed check: an unsubscribed chat has no members.
 func (h *handler) rating(ctx context.Context, chatID int64) {
-	c, ok, err := h.svc.Subscription(ctx, chatID)
-	switch {
-	case err != nil:
+	c, _, err := h.svc.Subscription(ctx, chatID)
+	if err != nil {
 		log.Printf("subscription of %d: %v", chatID, err)
-	case !ok:
-		h.text(ctx, chatID, msgRatingEmpty)
-	default:
-		h.text(ctx, chatID, formatRating(c.Standings()))
+		return
 	}
+	h.text(ctx, chatID, formatRating(c.Standings()))
 }
 
 func (h *handler) unsubscribe(ctx context.Context, chatID int64) {

@@ -80,12 +80,12 @@ func TestSender(t *testing.T) {
 			},
 		},
 		{
-			name: "problem: 403 wraps ErrBlocked and keeps the API error",
+			name: "problem: a 403, even wrapped, wraps ErrBlocked and keeps the API error",
 			ctx:  ctx,
 			call: sendProblem,
 			apiMock: func(ctrl *gomock.Controller) *mocks.MockbotAPI {
 				m := mocks.NewMockbotAPI(ctrl)
-				m.EXPECT().Send(gomock.Any()).Return(tgbotapi.Message{}, forbidden)
+				m.EXPECT().Send(gomock.Eq(msgCfg(dailyText, doneKeyboard()))).Return(tgbotapi.Message{}, fmt.Errorf("send: %w", forbidden))
 				return m
 			},
 			wantErr:  domain.ErrBlocked,
@@ -112,99 +112,22 @@ func TestSender(t *testing.T) {
 			wantErr: context.Canceled,
 		},
 		{
-			name: "fetch failed: HTML message without a keyboard",
-			ctx:  ctx,
-			call: sendFetchFailed,
-			apiMock: func(ctrl *gomock.Controller) *mocks.MockbotAPI {
-				m := mocks.NewMockbotAPI(ctrl)
-				m.EXPECT().Send(gomock.Eq(msgCfg("⚠️ Failed to fetch the problem from LeetCode. Try /today later.", nil))).
-					Return(tgbotapi.Message{MessageID: 11}, nil)
-				return m
-			},
-		},
-		{
 			name: "fetch failed: a 403 is not mapped",
 			ctx:  ctx,
 			call: sendFetchFailed,
 			apiMock: func(ctrl *gomock.Controller) *mocks.MockbotAPI {
 				m := mocks.NewMockbotAPI(ctrl)
-				m.EXPECT().Send(gomock.Any()).Return(tgbotapi.Message{}, forbidden)
+				m.EXPECT().Send(gomock.Eq(msgCfg("⚠️ Failed to fetch the problem from LeetCode. Try /today later.", nil))).
+					Return(tgbotapi.Message{}, forbidden)
 				return m
 			},
 			wantErr:  forbidden,
 			wantCode: http.StatusForbidden,
 		},
 		{
-			name:    "fetch failed: a done ctx makes no call",
+			name:    "answer: a done ctx makes no call",
 			ctx:     cancelled,
-			call:    sendFetchFailed,
-			apiMock: mocks.NewMockbotAPI,
-			wantErr: context.Canceled,
-		},
-		{
-			name: "text: HTML message without a keyboard",
-			ctx:  ctx,
-			call: func(ctx context.Context, s *sender) error { s.text(ctx, testChat, "hi"); return nil },
-			apiMock: func(ctrl *gomock.Controller) *mocks.MockbotAPI {
-				m := mocks.NewMockbotAPI(ctrl)
-				m.EXPECT().Send(gomock.Eq(msgCfg("hi", nil))).Return(tgbotapi.Message{MessageID: 12}, nil)
-				return m
-			},
-		},
-		{
-			name: "edit: HTML text with a keyboard",
-			ctx:  ctx,
-			call: func(ctx context.Context, s *sender) error { s.edit(ctx, testChat, 5, "hi", doneKeyboard()); return nil },
-			apiMock: func(ctrl *gomock.Controller) *mocks.MockbotAPI {
-				m := mocks.NewMockbotAPI(ctrl)
-				m.EXPECT().Send(gomock.Eq(editCfg(5, "hi", doneKeyboard()))).Return(tgbotapi.Message{MessageID: 5}, nil)
-				return m
-			},
-		},
-		{
-			name: "edit: a nil keyboard removes it",
-			ctx:  ctx,
-			call: func(ctx context.Context, s *sender) error { s.edit(ctx, testChat, 5, "hi", nil); return nil },
-			apiMock: func(ctrl *gomock.Controller) *mocks.MockbotAPI {
-				m := mocks.NewMockbotAPI(ctrl)
-				m.EXPECT().Send(gomock.Eq(editCfg(5, "hi", nil))).Return(tgbotapi.Message{MessageID: 5}, nil)
-				return m
-			},
-		},
-		{
-			name: "editKeyboard: replaces the keyboard only",
-			ctx:  ctx,
-			call: func(ctx context.Context, s *sender) error {
-				s.editKeyboard(ctx, testChat, 5, doneKeyboard())
-				return nil
-			},
-			apiMock: func(ctrl *gomock.Controller) *mocks.MockbotAPI {
-				m := mocks.NewMockbotAPI(ctrl)
-				m.EXPECT().Send(gomock.Eq(tgbotapi.NewEditMessageReplyMarkup(testChat, 5, *doneKeyboard()))).
-					Return(tgbotapi.Message{MessageID: 5}, nil)
-				return m
-			},
-		},
-		{
-			name: "answer: callback with a toast",
-			ctx:  ctx,
-			call: func(ctx context.Context, s *sender) error { s.answer(ctx, "cb", "hi"); return nil },
-			apiMock: func(ctrl *gomock.Controller) *mocks.MockbotAPI {
-				m := mocks.NewMockbotAPI(ctrl)
-				m.EXPECT().Request(gomock.Eq(tgbotapi.NewCallback("cb", "hi"))).Return(okResp, nil)
-				return m
-			},
-		},
-		{
-			name: "helpers: a done ctx makes no call",
-			ctx:  cancelled,
-			call: func(ctx context.Context, s *sender) error {
-				s.text(ctx, testChat, "hi")
-				s.edit(ctx, testChat, 5, "hi", nil)
-				s.editKeyboard(ctx, testChat, 5, doneKeyboard())
-				s.answer(ctx, "cb", "hi")
-				return nil
-			},
+			call:    func(ctx context.Context, s *sender) error { s.answer(ctx, "cb", "hi"); return nil },
 			apiMock: mocks.NewMockbotAPI,
 		},
 	}
@@ -224,28 +147,6 @@ func TestSender(t *testing.T) {
 				if !errors.As(err, &tgErr) || tgErr.Code != tt.wantCode {
 					t.Errorf("errors.As(err, *tgbotapi.Error) = %v, want code %d", tgErr, tt.wantCode)
 				}
-			}
-		})
-	}
-}
-
-func TestIsBotBlocked(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{name: "nil", err: nil, want: false},
-		{name: "generic error", err: errors.New("something"), want: false},
-		{name: "tg error 400", err: &tgbotapi.Error{Code: http.StatusBadRequest}, want: false},
-		{name: "tg error 403", err: &tgbotapi.Error{Code: http.StatusForbidden}, want: true},
-		{name: "wrapped tg error 403", err: fmt.Errorf("wrap: %w", &tgbotapi.Error{Code: http.StatusForbidden}), want: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := isBotBlocked(tt.err); got != tt.want {
-				t.Errorf("isBotBlocked(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
 	}

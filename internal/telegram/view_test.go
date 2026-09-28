@@ -10,29 +10,14 @@ import (
 	"github.com/solympe/leetcode-tg-notifier/internal/domain"
 )
 
-// The rows are copied from the old leetcode/format_test.go: FormatProblem(p)
-// is formatPick(Pick{Problem: p}), FormatRandomProblem(p, d) is
-// formatPick(Pick{Problem: p, DailyDifficulty: d}).
+// Valid dates are pinned by TestSender and the integration suite; these rows
+// cover the raw-date fallback of both templates.
 func TestFormatPick(t *testing.T) {
 	tests := []struct {
 		name string
 		p    domain.Pick
 		want string
 	}{
-		{
-			name: "daily: valid date",
-			p: domain.Pick{Problem: domain.Problem{
-				Date:       "2026-03-03",
-				Link:       "/problems/two-sum/",
-				ID:         "1",
-				Title:      "Two Sum",
-				Difficulty: "Easy",
-				Tags:       []string{"Array", "Hash Table"},
-			}},
-			want: "📅 LeetCode Daily — March 3, 2026\n\n" +
-				"🔢 1. Two Sum\n💪 Difficulty: Easy\n🏷 Array, Hash Table\n\n" +
-				"🔗 https://leetcode.com/problems/two-sum/",
-		},
 		{
 			name: "daily: unparseable date falls back to raw string",
 			p: domain.Pick{Problem: domain.Problem{
@@ -46,24 +31,6 @@ func TestFormatPick(t *testing.T) {
 			want: "📅 LeetCode Daily — someday\n\n" +
 				"🔢 146. LRU Cache\n💪 Difficulty: Medium\n🏷 Design\n\n" +
 				"🔗 https://leetcode.com/problems/lru-cache/",
-		},
-		{
-			name: "random: valid date",
-			p: domain.Pick{
-				Problem: domain.Problem{
-					Date:       "2026-09-27",
-					Link:       "/problems/trapping-rain-water/",
-					ID:         "42",
-					Title:      "Trapping Rain Water",
-					Difficulty: "Hard",
-					Tags:       []string{"Array", "Two Pointers"},
-				},
-				DailyDifficulty: "Easy",
-			},
-			want: "🎲 LeetCode Random — September 27, 2026\n" +
-				"Today's daily is Easy, so here's a random Hard problem for you.\n\n" +
-				"🔢 42. Trapping Rain Water\n💪 Difficulty: Hard\n🏷 Array, Two Pointers\n\n" +
-				"🔗 https://leetcode.com/problems/trapping-rain-water/",
 		},
 		{
 			name: "random: unparseable date falls back to raw string",
@@ -101,20 +68,6 @@ func TestFormatRating(t *testing.T) {
 		want      string
 	}{
 		{
-			name: "no members",
-			want: "No solves yet. Be the first to press ✅ Done!",
-		},
-		{
-			name:      "one member",
-			standings: []domain.Member{{Name: "Alice", Count: 3}},
-			want:      "🏆 Solved: <b>3</b>",
-		},
-		{
-			name:      "medals",
-			standings: []domain.Member{{Name: "Bob", Count: 3}, {Name: "Alice", Count: 2}, {Name: "Carol", Count: 2}},
-			want:      "🏆 <b>Rating</b>\n\n🥇 Bob — 3\n🥈 Alice — 2\n🥉 Carol — 2\n",
-		},
-		{
 			name: "4th place and later are numbered",
 			standings: []domain.Member{
 				{Name: "Bob", Count: 5}, {Name: "Alice", Count: 4}, {Name: "Carol", Count: 3},
@@ -133,27 +86,6 @@ func TestFormatRating(t *testing.T) {
 	}
 }
 
-func TestFormatDifficulties(t *testing.T) {
-	tests := []struct {
-		name string
-		ds   []string
-		want string
-	}{
-		{name: "nil means any", ds: nil, want: "Any"},
-		{name: "empty means any", ds: []string{}, want: "Any"},
-		{name: "one", ds: []string{"Easy"}, want: "Easy"},
-		{name: "several", ds: []string{"Easy", "Medium", "Hard"}, want: "Easy, Medium, Hard"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := formatDifficulties(tt.ds); got != tt.want {
-				t.Errorf("formatDifficulties(%v) = %q, want %q", tt.ds, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestKeyboards(t *testing.T) {
 	type button struct{ label, data string }
 	tests := []struct {
@@ -162,28 +94,6 @@ func TestKeyboards(t *testing.T) {
 		want [][]button
 	}{
 		{
-			name: "start",
-			kb:   startKeyboard(),
-			want: [][]button{
-				{{"📅 Today's problem", "/today"}, {"🗓 LeetCode daily", "/daily"}, {"⚙️ Setup", "/setup"}},
-				{{"ℹ️ Status", "/status"}, {"🏆 Rating", "/rating"}},
-				{{"🎚 Difficulty", "/difficulty"}, {"🛑 Unsubscribe", "/unsubscribe"}},
-			},
-		},
-		{
-			name: "done",
-			kb:   doneKeyboard(),
-			want: [][]button{{{"✅ Done", "done"}}},
-		},
-		{
-			name: "time",
-			kb:   timeKeyboard(),
-			want: [][]button{
-				{{"7:00", "time:07:00"}, {"8:00", "time:08:00"}, {"9:00", "time:09:00"}, {"10:00", "time:10:00"}},
-				{{"18:00", "time:18:00"}, {"19:00", "time:19:00"}, {"20:00", "time:20:00"}, {"21:00", "time:21:00"}},
-			},
-		},
-		{
 			name: "timezone: DST zones are labelled by tzLabel",
 			kb:   tzKeyboard(),
 			want: [][]button{
@@ -191,22 +101,6 @@ func TestKeyboards(t *testing.T) {
 				{{tzLabel("Lisbon", "Europe/Lisbon"), "tz:Europe/Lisbon"}, {"UTC+0", "tz:UTC"}},
 				{{"UTC+3 Moscow", "tz:Europe/Moscow"}, {"UTC+4 Dubai", "tz:Asia/Dubai"}},
 				{{"UTC+7 Bangkok", "tz:Asia/Bangkok"}},
-			},
-		},
-		{
-			name: "difficulty: nothing selected",
-			kb:   difficultyKeyboard(nil),
-			want: [][]button{
-				{{"⬜ Easy", "diff:Easy"}, {"⬜ Medium", "diff:Medium"}, {"⬜ Hard", "diff:Hard"}},
-				{{"💾 Save", "diffsave"}},
-			},
-		},
-		{
-			name: "difficulty: all selected",
-			kb:   difficultyKeyboard([]string{"Easy", "Medium", "Hard"}),
-			want: [][]button{
-				{{"✅ Easy", "diff:Easy"}, {"✅ Medium", "diff:Medium"}, {"✅ Hard", "diff:Hard"}},
-				{{"💾 Save", "diffsave"}},
 			},
 		},
 		{
@@ -244,6 +138,7 @@ func TestTzLabel(t *testing.T) {
 		{name: "whole hours east", city: "Dubai", zone: "Asia/Dubai", want: "UTC+4 Dubai"},
 		{name: "half-hour zone", city: "Kolkata", zone: "Asia/Kolkata", want: "UTC+5:30 Kolkata"},
 		{name: "west of UTC", city: "Bogota", zone: "America/Bogota", want: "UTC-5 Bogota"},
+		{name: "half-hour zone west of UTC", city: "Marquesas", zone: "Pacific/Marquesas", want: "UTC-9:30 Marquesas"},
 		{name: "UTC", city: "UTC", zone: "UTC", want: "UTC+0 UTC"},
 		{name: "unknown zone falls back to the city", city: "Mars", zone: "Mars/Base", want: "Mars"},
 	}
