@@ -4,6 +4,7 @@ package leetcode
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -101,13 +102,14 @@ type httpClient struct {
 	rnd      randSource
 }
 
-// NewHTTPClient returns a LeetCode client that sends requests with c, or with
-// a client limited to defaultHTTPTimeout per request when c is nil.
-func NewHTTPClient(c *http.Client) *httpClient {
+// NewHTTPClient returns a LeetCode client that POSTs to endpoint, or to
+// graphqlURL when endpoint is empty. It sends requests with c, or with a
+// client limited to defaultHTTPTimeout per request when c is nil.
+func NewHTTPClient(endpoint string, c *http.Client) *httpClient {
 	if c == nil {
 		c = &http.Client{Timeout: defaultHTTPTimeout}
 	}
-	return &httpClient{http: c, endpoint: graphqlURL, rnd: globalRand{}}
+	return &httpClient{http: c, endpoint: cmp.Or(endpoint, graphqlURL), rnd: globalRand{}}
 }
 
 // query POSTs a GraphQL payload and decodes a 200 OK JSON response into out.

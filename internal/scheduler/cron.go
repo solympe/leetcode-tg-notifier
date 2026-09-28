@@ -5,6 +5,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/robfig/cron/v3"
 
@@ -62,4 +63,52 @@ func (cs *cronScheduler) Remove(chatID int64) {
 		cs.c.Remove(id)
 		delete(cs.entries, chatID)
 	}
+}
+
+// Start starts firing scheduled jobs. NewCronScheduler has already started
+// the scheduler and cron ignores a second Start, so calling it is always safe.
+func (cs *cronScheduler) Start() {
+	cs.c.Start()
+}
+
+// Stop stops new firings and waits for the jobs cron has already started.
+// It does not hold cs.mu while waiting, so a running job may call Remove.
+func (cs *cronScheduler) Stop() {
+	<-cs.c.Stop().Done()
+}
+
+// RunNow runs the chat's scheduled job synchronously, exactly as cron would
+// run it, and reports whether the chat has one. cs.mu is released before the
+// job runs, so a job that removes its own chat cannot deadlock. It also works
+// after Stop.
+func (cs *cronScheduler) RunNow(chatID int64) bool {
+	e, ok := cs.entry(chatID)
+	if !ok {
+		return false
+	}
+	e.WrappedJob.Run()
+	return true
+}
+
+// Next returns the chat's next firing time, in time.Local, and whether the
+// chat has a scheduled job. It works whether or not cron is running.
+func (cs *cronScheduler) Next(chatID int64) (time.Time, bool) {
+	e, ok := cs.entry(chatID)
+	if !ok {
+		return time.Time{}, false
+	}
+	return e.Schedule.Next(time.Now()), true
+}
+
+// entry returns a snapshot of the chat's cron entry. It holds cs.mu only to
+// look up the entry ID.
+func (cs *cronScheduler) entry(chatID int64) (cron.Entry, bool) {
+	cs.mu.Lock()
+	id, ok := cs.entries[chatID]
+	cs.mu.Unlock()
+	if !ok {
+		return cron.Entry{}, false
+	}
+	e := cs.c.Entry(id)
+	return e, e.Valid()
 }

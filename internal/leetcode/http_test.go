@@ -381,8 +381,7 @@ func TestFetchRandom(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			srv := newListServer(t, tt.wantFilter, tt.calls)
-			hc := NewHTTPClient(srv.Client())
-			hc.endpoint = srv.URL
+			hc := NewHTTPClient(srv.URL, srv.Client())
 			hc.rnd = tt.randMock(ctrl)
 
 			got, err := hc.FetchRandom(tt.difficulties)
@@ -407,19 +406,23 @@ func TestFetchRandom(t *testing.T) {
 
 func TestNewHTTPClient(t *testing.T) {
 	explicit := &http.Client{Timeout: time.Minute}
+	const local = "http://127.0.0.1:8080/graphql"
 
 	tests := []struct {
-		name        string
-		client      *http.Client
-		wantTimeout time.Duration
+		name         string
+		endpoint     string
+		client       *http.Client
+		wantEndpoint string
+		wantTimeout  time.Duration
 	}{
-		{name: "nil gets a client with a 10s timeout", client: nil, wantTimeout: 10 * time.Second},
-		{name: "explicit client is used as is", client: explicit, wantTimeout: time.Minute},
+		{name: "nil gets a client with a 10s timeout", client: nil, wantEndpoint: graphqlURL, wantTimeout: 10 * time.Second},
+		{name: "explicit client is used as is", client: explicit, wantEndpoint: graphqlURL, wantTimeout: time.Minute},
+		{name: "explicit endpoint is used as is", endpoint: local, client: nil, wantEndpoint: local, wantTimeout: 10 * time.Second},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			hc := NewHTTPClient(tt.client)
+			hc := NewHTTPClient(tt.endpoint, tt.client)
 			if tt.client != nil && hc.http != tt.client {
 				t.Errorf("http client: got %p, want the explicit %p", hc.http, tt.client)
 			}
@@ -429,8 +432,8 @@ func TestNewHTTPClient(t *testing.T) {
 			if hc.http.Timeout != tt.wantTimeout {
 				t.Errorf("timeout: got %v, want %v", hc.http.Timeout, tt.wantTimeout)
 			}
-			if hc.endpoint != graphqlURL {
-				t.Errorf("endpoint: got %q, want %q", hc.endpoint, graphqlURL)
+			if hc.endpoint != tt.wantEndpoint {
+				t.Errorf("endpoint: got %q, want %q", hc.endpoint, tt.wantEndpoint)
 			}
 		})
 	}
@@ -508,8 +511,7 @@ func TestFetchDaily(t *testing.T) {
 				}
 			})
 
-			hc := NewHTTPClient(srv.Client())
-			hc.endpoint = srv.URL
+			hc := NewHTTPClient(srv.URL, srv.Client())
 
 			got, err := hc.FetchDaily()
 			if tt.wantErr != "" {

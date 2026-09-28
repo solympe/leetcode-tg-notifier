@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 
@@ -34,7 +35,7 @@ func main() {
 	}
 	log.Printf("Authorized as @%s", api.Self.UserName)
 
-	b := bot.New(api, api.Self.UserName, store, leetcode.NewHTTPClient(nil), nil)
+	b := bot.New(api, api.Self.UserName, store, leetcode.NewHTTPClient("", nil), nil)
 	sched := scheduler.NewCronScheduler(b.SendDailyProblem)
 	b.SetScheduler(sched)
 
@@ -44,5 +45,7 @@ func main() {
 		}
 	}
 
-	b.Run()
+	for u := range api.GetUpdatesChan(tgbotapi.UpdateConfig{Timeout: 60}) {
+		b.Handle(context.Background(), u)
+	}
 }

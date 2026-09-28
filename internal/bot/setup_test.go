@@ -291,7 +291,7 @@ func expectAbandonedSetup(m *mocks.MocktelegramSender) []any {
 }
 
 // TestSetupFlowThroughRouter drives the whole /setup flow through
-// handleMessage, as Run does: /setup, a time button, a sticker and then a
+// handleMessage, as Handle does: /setup, a time button, a sticker and then a
 // typed timezone, stray text at the difficulty step, a toggle and Save.
 func TestSetupFlowThroughRouter(t *testing.T) {
 	members := map[string]storage.UserStat{"1": {Name: "Alice", Count: 4, LastSolvedDate: "2026-09-26"}}

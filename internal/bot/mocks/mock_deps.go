@@ -42,20 +42,6 @@ func (m *MocktelegramSender) EXPECT() *MocktelegramSenderMockRecorder {
 	return m.recorder
 }
 
-// GetUpdatesChan mocks base method.
-func (m *MocktelegramSender) GetUpdatesChan(config tgbotapi.UpdateConfig) tgbotapi.UpdatesChannel {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetUpdatesChan", config)
-	ret0, _ := ret[0].(tgbotapi.UpdatesChannel)
-	return ret0
-}
-
-// GetUpdatesChan indicates an expected call of GetUpdatesChan.
-func (mr *MocktelegramSenderMockRecorder) GetUpdatesChan(config any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUpdatesChan", reflect.TypeOf((*MocktelegramSender)(nil).GetUpdatesChan), config)
-}
-
 // Request mocks base method.
 func (m *MocktelegramSender) Request(c tgbotapi.Chattable) (*tgbotapi.APIResponse, error) {
 	m.ctrl.T.Helper()

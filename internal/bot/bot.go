@@ -3,6 +3,8 @@ package bot
 //go:generate mockgen -source=bot.go -destination=mocks/mock_deps.go -package=mocks
 
 import (
+	"context"
+
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"github.com/solympe/leetcode-tg-notifier/internal/leetcode"
@@ -12,7 +14,6 @@ import (
 type telegramSender interface {
 	Send(c tgbotapi.Chattable) (tgbotapi.Message, error)
 	Request(c tgbotapi.Chattable) (*tgbotapi.APIResponse, error)
-	GetUpdatesChan(config tgbotapi.UpdateConfig) tgbotapi.UpdatesChannel
 }
 
 type chatStore interface {
@@ -58,11 +59,8 @@ func (b *tgBot) SetScheduler(sched taskScheduler) {
 	b.sched = sched
 }
 
-func (b *tgBot) Run() {
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
-	updates := b.api.GetUpdatesChan(u)
-	for update := range updates {
-		b.handleMessage(update)
-	}
+// Handle handles one update. The context is not used yet: the ports have no
+// context parameter until the refactor threads one through.
+func (b *tgBot) Handle(_ context.Context, u tgbotapi.Update) {
+	b.handleMessage(u)
 }
