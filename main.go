@@ -17,6 +17,10 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	context.AfterFunc(ctx, func() {
+		stop() // a second signal gets the default behaviour and kills the process
+		log.Print("shutting down; signal again to force")
+	})
 	a, err := app.New(ctx, app.Config{Token: token, StoragePath: os.Getenv("STORAGE_PATH")})
 	if err != nil {
 		log.Fatal(err) // app.New wraps as "storage: …" / "NewBotAPI: …", matching today's log lines

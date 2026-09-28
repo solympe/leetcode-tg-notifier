@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"errors"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -160,6 +161,20 @@ func TestRunNow(t *testing.T) {
 			wantEntries: 1,
 		},
 		{
+			// Schedule removes the old entry before parsing, so a failed
+			// reschedule leaves a stale EntryID that must not be run.
+			name: "failed reschedule leaves no runnable entry",
+			setup: func(s *cronScheduler) error {
+				if err := s.Schedule(100, chatAt(100, idle, "UTC")); err != nil {
+					return err
+				}
+				if err := s.Schedule(100, chatAt(100, "25:00", "UTC")); err == nil {
+					return errors.New("Schedule accepted 25:00")
+				}
+				return nil
+			},
+		},
+		{
 			// A blocked chat unsubscribes from inside its own job.
 			name:     "a job that removes its own chat does not deadlock",
 			setup:    func(s *cronScheduler) error { return s.Schedule(100, chatAt(100, idle, "UTC")) },
@@ -218,10 +233,22 @@ func TestStop(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := NewCronScheduler((&recorder{}).send)
-			t.Cleanup(s.Stop)
+			t.Cleanup(func() {
+				// Bounded, so a Stop that deadlocks fails the test instead of hanging it.
+				done := make(chan struct{})
+				go func() {
+					s.Stop()
+					close(done)
+				}()
+				select {
+				case <-done:
+				case <-time.After(3 * time.Second):
+					t.Error("Stop hung in cleanup")
+				}
+			})
 			started, release := make(chan struct{}), make(chan struct{})
 			releaseJob := sync.OnceFunc(func() { close(release) })
-			t.Cleanup(releaseJob) // runs before s.Stop, so a failed test never hangs
+			t.Cleanup(releaseJob) // runs before the Stop cleanup above
 
 			// A one-second schedule makes cron itself start the job; the
 			// daily specs Schedule builds never fire within a test.
