@@ -43,3 +43,14 @@ jobs:
           PATH="$(go env GOPATH)/bin:$PATH" go generate ./...
           git status --porcelain
           test -z "$(git status --porcelain)"
+
+  integration:
+    name: Integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test -tags integration -race -count=1 -timeout 5m ./...

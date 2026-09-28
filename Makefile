@@ -1,10 +1,13 @@
-.PHONY: build test lint generate tidy
+.PHONY: build test test-integration lint generate tidy
 
 build:
 	go build ./...
 
 test:
 	go test ./... -race -count=1
+
+test-integration:
+	go test -tags integration -race -count=1 -timeout 5m ./...
 
 lint:
 	golangci-lint run ./...
